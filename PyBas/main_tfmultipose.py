@@ -4,8 +4,7 @@ import numpy as np
 import cv2
 import json
 import pprint
-
-# import asyncio
+import asyncio
 
 # import IO.socketio_server as Server
 
@@ -140,5 +139,5 @@ if __name__ == "__main__":
     # asyncio.run(main(server.send_message))
     def empty(dingo):
         pass
-    # asyncio.run(main(empty))
-    main(empty)
+    asyncio.run(main(empty))
+    # main(empty)
