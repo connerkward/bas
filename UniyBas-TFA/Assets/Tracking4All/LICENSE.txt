@@ -1,0 +1,48 @@
+BACKGROUND:
+G8gaming Ltd is a Canadian Federal Corporation (989389-0) that has developed this body tracking framework. 
+You have legally purchased a license from G8gaming Ltd to use this body tracking framework as a solution to 
+power the body tracking component in your video game projects.
+
+LICENSE:
+G8gaming Ltd grants a nontransferable, nonexclusive license to use this body tracking framework to power your video game projects
+under the following terms and conditions:
+
+	You agree to not sublicense, distribute, or otherwise make the framework available to any third party besides you who
+	have purchased this license.
+
+	You agree to not use this framework to create or develop any technology, product, or service that competes with or provides the 
+	functionality of this framework, either directly or indirectly. This includes any efforts to create alternative solutions that would 
+	render the framework redundant or undermine the purpose of this license. 
+
+	You agree to not provide the raw functionality of the framework to any other party and only use this framework when embeded and 
+	powering your video game projects.
+
+	You agree to not to distribute the framework (source, assets, etc.) to any third party who is not a part of 
+	this license agreement.
+
+	You agree to not remove or alter any proprietary notices, labels, or licenses on/in the framework.
+
+	You agree to not use this framework for any illegal purposes or where a lack of performance of the framework could pose a significant
+	risk to yourself, or others.
+
+	G8gaming Ltd retains the full rights to sublicense and distribute this framework to any party without limitation.
+
+G8gaming Ltd shall not be liable for any indirect, incidental, special, consequential, or punitive damages, or any loss of 
+profits or revenues, whether incurred directly or indirectly, or any loss of data, use, goodwill, or other intangible losses, 
+including but not limited to damages resulting from: 
+	(i) the use or inability to use the framework; 
+	(ii) any unauthorized access to or use of Company's servers and/or any personal information stored therein; 
+	(iii) any interruption, inaccuracy, or cessation of transmission to or from the framework; 
+	(iv) any injury or harm suffered by any users while playing the game or using the framework technology, 
+	whether due to accident, inaccurate tracking, or other causes; and 
+	(v) any errors, defects, or other issues arising from the implementation or operation of the framework and game 
+	as intended under this agreement.
+
+THE FRAMEWORK, SUPPORT, PRODUCT, AND SERVICES ARE PROVIDED "AS IS" WITHOUT ANY WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, 
+INCLUDING BUT NOT LIMITED TO WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, OR NON-INFRINGEMENT.
+
+(C) 2024 G8gaming Ltd.
+
+QUESTIONS/SUPPORT:
+	Contact:
+	support@g8gaming.ca
