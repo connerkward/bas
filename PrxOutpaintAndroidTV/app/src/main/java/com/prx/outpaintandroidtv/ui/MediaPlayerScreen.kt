@@ -84,7 +84,7 @@ fun MediaPlayerScreen(
                     .build(),
                 contentDescription = track.name ?: "Album art",
                 modifier = Modifier
-                    .size(600.dp)
+                    .size(400.dp)
                     .align(Alignment.Center),
                 contentScale = ContentScale.Fit
             )
