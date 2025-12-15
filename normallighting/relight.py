@@ -166,11 +166,26 @@ class RelightProcessor:
                 dof_amount: float = 0.0, normal_strength: float = 1.0,
                 brightness: float = 1.0, ambient_color: tuple = (0.5, 0.5, 0.5),
                 cutout_x: float = 0.5, cutout_y: float = 0.5, 
-                cutout_size: float = 0.0) -> np.ndarray:
-        """Process with day/night cycle, depth of field, and dashboard ambient."""
+                cutout_size: float = 0.0,
+                override_light: dict = None) -> np.ndarray:
+        """Process with day/night cycle, depth of field, and dashboard ambient.
+        
+        override_light: dict with 'azimuth', 'elevation', 'color' (BGR 0-1) to override lighting.
+        """
         
         # Get sun/moon parameters
         params = self._get_sun_moon_params(hours, brightness)
+        
+        # Override with custom light if provided
+        if override_light:
+            if 'azimuth' in override_light:
+                params['azimuth'] = override_light['azimuth']
+            if 'elevation' in override_light:
+                params['elevation'] = override_light['elevation']
+            if 'color' in override_light:
+                params['light_color'] = override_light['color']
+            if 'intensity' in override_light:
+                params['intensity'] = override_light['intensity']
         
         result = self.original.copy()
         
@@ -297,6 +312,18 @@ class RelightUI:
         self.animating = False
         self.anim_start_time = 0
         
+        # Mercedes ambient animation
+        self.merc_animating = False
+        self.merc_start_time = 0
+        # Subtle Mercedes interior colors (BGR format) - warm, understated
+        self.merc_colors = [
+            (0.85, 0.9, 0.95),   # Warm white
+            (0.5, 0.6, 0.85),    # Soft amber
+            (0.75, 0.65, 0.55),  # Muted ice blue
+        ]
+        self.merc_color_names = ["Warm White", "Soft Amber", "Ice Blue"]
+        self._merc_status = ""
+        
         # Dashboard ambient color (0.0-1.0 for each channel)
         self.ambient_r = 0.5
         self.ambient_g = 0.5
@@ -320,7 +347,7 @@ class RelightUI:
         print(f"Original: {self.original_path.name}")
         print(f"Normal maps: {len(self.normal_maps)}")
         print(f"Depth maps: {len(self.depth_maps)}")
-        print(f"[Space] Save | [P] Play cycle | [ESC] Quit\n")
+        print(f"[Space] Save | [P] Play day/night | [M] Mercedes ambient | [ESC] Quit\n")
     
     def _find_file(self, pattern: str) -> Optional[Path]:
         matches = list(self.image_dir.glob(f"*{pattern}*.png"))
@@ -405,7 +432,49 @@ class RelightUI:
                     self.current_depth_idx = new_idx
                     self._update_processor()
             
-            # Check for animation
+            # Check for Mercedes ambient animation
+            override_light = None
+            merc_status = ""
+            if self.merc_animating:
+                now = time.time()
+                elapsed = now - self.merc_start_time
+                color_duration = 5.0  # 5 seconds per color
+                cycle_duration = color_duration * len(self.merc_colors)
+                
+                if elapsed >= cycle_duration:
+                    self.merc_animating = False
+                else:
+                    # Calculate which color and transition
+                    color_idx = int(elapsed / color_duration) % len(self.merc_colors)
+                    next_idx = (color_idx + 1) % len(self.merc_colors)
+                    
+                    # Smooth blend between colors
+                    t = (elapsed % color_duration) / color_duration
+                    t = t * t * (3 - 2 * t)  # Smoothstep
+                    
+                    c1 = self.merc_colors[color_idx]
+                    c2 = self.merc_colors[next_idx]
+                    blended = (
+                        c1[0] * (1 - t) + c2[0] * t,
+                        c1[1] * (1 - t) + c2[1] * t,
+                        c1[2] * (1 - t) + c2[2] * t,
+                    )
+                    
+                    # More dramatic light movement
+                    light_rotations = 6.0  # Full rotations during animation
+                    azimuth = (elapsed / cycle_duration) * 360 * light_rotations
+                    # Slower, wider elevation sweep
+                    elevation = 35 + 30 * np.sin(elapsed * 0.8)
+                    
+                    override_light = {
+                        'azimuth': azimuth,
+                        'elevation': elevation,
+                        'color': blended,
+                        'intensity': 1.0
+                    }
+                    merc_status = f" [{self.merc_color_names[color_idx]}]"
+            
+            # Check for day/night animation
             if self.animating:
                 now = time.time()
                 elapsed = now - self.anim_start_time
@@ -438,8 +507,7 @@ class RelightUI:
                     else:  # Night (after dusk)
                         dof_factor = 1.0
                     self.dof_amount = dof_factor
-                
-            else:
+            elif not self.merc_animating:
                 self.hours = cv2.getTrackbarPos("Hour", controls_window) / 10.0
                 self.dof_amount = cv2.getTrackbarPos("DOF Amount", controls_window) / 100.0
             
@@ -464,8 +532,12 @@ class RelightUI:
                 ambient_color=(self.ambient_r, self.ambient_g, self.ambient_b),
                 cutout_x=self.cutout_x,
                 cutout_y=self.cutout_y,
-                cutout_size=self.cutout_size
+                cutout_size=self.cutout_size,
+                override_light=override_light
             )
+            
+            # Store merc status for display
+            self._merc_status = merc_status
             
             # Build composite display
             display = self._build_display(result)
@@ -474,7 +546,7 @@ class RelightUI:
             cv2.imshow(controls_window, np.zeros((1, 400, 3), dtype=np.uint8))
             
             # Minimal delay during animation for maximum smoothness
-            wait_time = 8 if self.animating else 30  # ~120fps during animation
+            wait_time = 8 if (self.animating or self.merc_animating) else 30
             key = cv2.waitKey(wait_time) & 0xFF
             if key == 27:  # ESC
                 break
@@ -482,10 +554,16 @@ class RelightUI:
                 output_path = self.image_dir / f"relit_{self.original_path.stem}.png"
                 cv2.imwrite(str(output_path), result)
                 print(f"Saved: {output_path}")
-            elif key == ord('p'):  # Play animation
+            elif key == ord('p'):  # Play day/night animation
                 self.animating = True
+                self.merc_animating = False  # Stop Mercedes if running
                 self.anim_start_time = time.time()
                 print("Playing day/night cycle (21 seconds)...")
+            elif key == ord('m'):  # Play Mercedes ambient animation
+                self.merc_animating = True
+                self.animating = False  # Stop day/night if running
+                self.merc_start_time = time.time()
+                print("Playing Mercedes ambient (15 seconds)...")
         
         cv2.destroyAllWindows()
     
@@ -549,6 +627,11 @@ class RelightUI:
     
     def _get_time_string(self) -> str:
         """Convert hours (0-24) to readable time."""
+        # Mercedes animation takes priority in display
+        if self.merc_animating:
+            merc_status = getattr(self, '_merc_status', '')
+            return f"Mercedes Ambient{merc_status}"
+        
         h = int(self.hours) % 24
         m = int((self.hours - int(self.hours)) * 60)
         
