@@ -12,7 +12,7 @@ import shutil
 import sys
 
 
-def frames_to_video(frames_dir: str, output_path: str, fps: float = 12.0):
+def frames_to_video(frames_dir: str, output_path: str, fps: float = 12.0, codec: str = "lossy"):
     """Convert a sequence of frames to a video using ffmpeg."""
     # Get all frame files sorted
     frame_pattern = os.path.join(frames_dir, "frame_*.png")
@@ -33,16 +33,35 @@ def frames_to_video(frames_dir: str, output_path: str, fps: float = 12.0):
         
         # Use ffmpeg to create video
         input_pattern = os.path.join(temp_dir, "frame_%06d.png")
-        cmd = [
-            "ffmpeg",
-            "-y",  # Overwrite output
-            "-framerate", str(fps),
-            "-i", input_pattern,
-            "-c:v", "libx264",
-            "-pix_fmt", "yuv420p",
-            "-crf", "23",
-            output_path
-        ]
+        
+        # Build codec-specific command
+        if codec == "lossless":
+            # Lossless H.264 - preserves dithering perfectly
+            cmd = [
+                "ffmpeg", "-y", "-framerate", str(fps), "-i", input_pattern,
+                "-c:v", "libx264", "-crf", "0", "-preset", "veryslow",
+                output_path
+            ]
+        elif codec == "prores":
+            # ProRes 4444 - near-lossless, good for dithering
+            cmd = [
+                "ffmpeg", "-y", "-framerate", str(fps), "-i", input_pattern,
+                "-c:v", "prores_ks", "-profile:v", "4444", "-pix_fmt", "yuva444p10le",
+                output_path.replace(".mp4", ".mov")
+            ]
+        elif codec == "png":
+            # PNG in MKV container - fully lossless
+            cmd = [
+                "ffmpeg", "-y", "-framerate", str(fps), "-i", input_pattern,
+                "-c:v", "png",
+                output_path.replace(".mp4", ".mkv")
+            ]
+        else:  # lossy default
+            cmd = [
+                "ffmpeg", "-y", "-framerate", str(fps), "-i", input_pattern,
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "23",
+                output_path
+            ]
         
         print(f"Encoding video with ffmpeg...")
         result = subprocess.run(cmd, capture_output=True, text=True)
@@ -71,6 +90,9 @@ def main():
                         help="Output video path (default: {input_dir}_{blend_mode}.mp4)")
     parser.add_argument("--fps", type=float, default=12.0,
                         help="Output video fps (default: 12.0 for stop motion)")
+    parser.add_argument("--codec", type=str, default="lossy",
+                        choices=["lossy", "lossless", "prores", "png"],
+                        help="Codec: lossy (h264), lossless (h264 crf=0), prores (4444), png (lossless)")
     parser.add_argument("--use-chronophoto", action="store_true",
                         help="Use chronophoto.png instead of frame sequence")
     
@@ -125,7 +147,7 @@ def main():
         
         print(f"Created video: {args.output} (1 second @ {args.fps} fps)")
     else:
-        frames_to_video(frames_dir, args.output, args.fps)
+        frames_to_video(frames_dir, args.output, args.fps, args.codec)
 
 
 if __name__ == "__main__":
