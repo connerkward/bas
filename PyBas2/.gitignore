@@ -14,3 +14,5 @@ da3_src/
 
 *.png
 *.mp4
+
+.DS_Store
