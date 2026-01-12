@@ -19,7 +19,8 @@ alwaysApply: true
 1. Read `PyBas3/agents/SESSION.md` for context + tasks
 2. **Claim role:**
    - If user specified (e.g. "spin up as Iris") → use that role
-   - If not specified → read `status/*` files, pick first available role:
+   - "spin up as Orchestrator" → cross-lane integration testing (can touch all modules)
+   - If not specified → read `status/*` files, pick first available lane role:
      - `active: no` → available
      - `active: yes` but `last_updated` >2 hours → stale, available
    - If still unclear → ask user
