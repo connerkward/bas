@@ -57,6 +57,8 @@ alwaysApply: true
 - Module tests: `scoring/test_scorer.py`, `mediapipe/test_vision.sh`
 - Integration tests don't need camera (test shared memory + JSON)
 - Full Vision/NDI end-to-end requires camera
+- **NEVER say "here's how to test it" - RUN THE TEST YOURSELF and verify output**
+- Don't leave user hanging with instructions - execute and confirm results
 
 ## Architecture
 - Each module = independent process
