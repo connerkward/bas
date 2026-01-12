@@ -67,9 +67,9 @@ def decode_pose(buffer: memoryview, offset: int) -> Optional[ParticipantPose]:
     Returns:
         ParticipantPose if slot is occupied, None if empty
     """
-    # Read UUID (36 bytes, null-padded)
+    # Read UUID (36 bytes, space-padded)
     uuid_bytes = bytes(buffer[offset:offset+UUID_BYTES])
-    uuid = uuid_bytes.decode('utf-8').strip('\x00')
+    uuid = uuid_bytes.decode('utf-8').strip('\x00').strip()
     
     if not uuid:
         # Empty slot
