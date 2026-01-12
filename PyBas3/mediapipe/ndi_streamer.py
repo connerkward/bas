@@ -2,7 +2,7 @@
 """
 NDI video streamer for participant video outputs.
 
-Creates NDI streams named `BAS_Participant_<UUID>` for each detected participant.
+Creates separate NDI streams named `BAS_Participant_<UUID>` for each detected participant.
 """
 
 import cv2
@@ -19,53 +19,54 @@ except ImportError:
 
 
 class NDIStreamer:
-    """Manages NDI video streams for participants."""
+    """Manages per-participant NDI video streams."""
     
     def __init__(self):
-        self.streams: Dict[str, dict] = {}  # uuid -> {sender, video_frame}
-        self.ndi_find = None
-        self.ndi_send = None
+        self.streams: Dict[str, dict] = {}  # uuid -> {sender, video_frame, ...}
+        self._initialized = False
         
         if not NDI_AVAILABLE:
             print("NDI streaming disabled (ndi-python not installed)")
             return
         
-        # Initialize NDI
+        # Initialize NDI library
         if not ndi.initialize():
             print("Failed to initialize NDI")
             return
         
-        # Create NDI finder
-        find_create = ndi.FindCreate()
-        find_create.show_local_sources = True
-        self.ndi_find = ndi.find_create_v2(find_create)
-        
-        # Create NDI sender
-        send_create = ndi.SendCreate()
-        send_create.ndi_name = "PyBas3 Vision"
-        send_create.clock_video = True
-        self.ndi_send = ndi.send_create(send_create)
-        
-        if not self.ndi_send:
-            print("Failed to create NDI sender")
-            return
-        
+        self._initialized = True
         print("NDI streamer initialized")
     
-    def create_stream(self, uuid: str, width: int, height: int, fps: float = 30.0):
+    def create_stream(self, uuid: str, width: int, height: int, fps: float = 30.0) -> bool:
         """
-        Create an NDI stream for a participant.
+        Create a dedicated NDI stream for a participant.
         
         Args:
             uuid: Participant UUID
             width: Video width
             height: Video height
             fps: Frame rate
+        
+        Returns:
+            True if stream created successfully
         """
-        if not NDI_AVAILABLE or not self.ndi_send:
+        if not self._initialized:
             return False
         
+        if uuid in self.streams:
+            return True  # Already exists
+        
         stream_name = f"BAS_Participant_{uuid}"
+        
+        # Create dedicated sender for this participant
+        send_create = ndi.SendCreate()
+        send_create.ndi_name = stream_name
+        send_create.clock_video = False  # Don't block on send
+        
+        sender = ndi.send_create(send_create)
+        if not sender:
+            print(f"Failed to create NDI sender for {stream_name}")
+            return False
         
         # Create video frame descriptor
         video_frame = ndi.VideoFrameV2()
@@ -81,6 +82,7 @@ class NDIStreamer:
         
         self.streams[uuid] = {
             "name": stream_name,
+            "sender": sender,
             "video_frame": video_frame,
             "width": width,
             "height": height
@@ -89,21 +91,25 @@ class NDIStreamer:
         print(f"Created NDI stream: {stream_name} ({width}x{height})")
         return True
     
-    def send_frame(self, uuid: str, frame_bgra: np.ndarray):
+    def send_frame(self, uuid: str, frame_bgra: np.ndarray) -> bool:
         """
-        Send a frame to an NDI stream.
+        Send a frame to a participant's NDI stream.
         
         Args:
             uuid: Participant UUID
             frame_bgra: Frame in BGRA format (height, width, 4)
+        
+        Returns:
+            True if frame sent successfully
         """
-        if not NDI_AVAILABLE or not self.ndi_send:
+        if not self._initialized:
             return False
         
         if uuid not in self.streams:
             return False
         
         stream = self.streams[uuid]
+        sender = stream["sender"]
         video_frame = stream["video_frame"]
         
         # Ensure frame matches stream dimensions
@@ -111,29 +117,65 @@ class NDIStreamer:
         if h != stream["height"] or w != stream["width"]:
             frame_bgra = cv2.resize(frame_bgra, (stream["width"], stream["height"]))
         
-        # Copy frame data to NDI buffer
-        video_frame.data[:] = frame_bgra
+        # Ensure BGRA format (4 channels)
+        if len(frame_bgra.shape) == 2:
+            frame_bgra = cv2.cvtColor(frame_bgra, cv2.COLOR_GRAY2BGRA)
+        elif frame_bgra.shape[2] == 3:
+            frame_bgra = cv2.cvtColor(frame_bgra, cv2.COLOR_BGR2BGRA)
         
-        # Send frame
-        ndi.send_send_video_v2(self.ndi_send, video_frame)
+        # Copy frame data to NDI buffer
+        np.copyto(video_frame.data, frame_bgra)
+        
+        # Send frame through this participant's sender
+        ndi.send_send_video_v2(sender, video_frame)
         return True
     
     def remove_stream(self, uuid: str):
-        """Remove an NDI stream for a participant."""
+        """Remove and destroy an NDI stream for a participant."""
         if uuid in self.streams:
+            stream = self.streams[uuid]
+            if stream.get("sender"):
+                ndi.send_destroy(stream["sender"])
             del self.streams[uuid]
-            print(f"Removed NDI stream for participant {uuid[:8]}")
+            print(f"Removed NDI stream: BAS_Participant_{uuid}")
     
     def close(self):
-        """Clean up NDI resources."""
+        """Clean up all NDI resources."""
         if not NDI_AVAILABLE:
             return
         
-        if self.ndi_send:
-            ndi.send_destroy(self.ndi_send)
+        # Destroy all participant senders
+        for uuid in list(self.streams.keys()):
+            self.remove_stream(uuid)
         
-        if self.ndi_find:
-            ndi.find_destroy(self.ndi_find)
+        # Destroy NDI library
+        if self._initialized:
+            ndi.destroy()
+            self._initialized = False
         
-        ndi.destroy()
         print("NDI streamer closed")
+
+
+if __name__ == "__main__":
+    # Test: create streams and verify they appear
+    import time
+    
+    streamer = NDIStreamer()
+    
+    # Create test stream
+    streamer.create_stream("test1234", 640, 480)
+    
+    # Send some frames
+    print("Sending test frames for 3 seconds...")
+    for i in range(90):
+        # Create gradient test pattern
+        frame = np.zeros((480, 640, 4), dtype=np.uint8)
+        frame[:, :, 0] = i * 2 % 256  # Blue varies
+        frame[:, :, 1] = 100  # Green constant
+        frame[:, :, 2] = 50   # Red constant
+        frame[:, :, 3] = 255  # Alpha
+        streamer.send_frame("test1234", frame)
+        time.sleep(1/30)
+    
+    streamer.close()
+    print("Test complete")
