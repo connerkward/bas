@@ -9,8 +9,9 @@ Read poses from shared memory, compare to reference video, write per-participant
 `PyBas3/scoring/`: `pose_scorer.py`, `reference_builder.py`, `shared_memory_reader.py`, `output/`
 
 ## Inputs
-- Shared mem: `bas_pose_data` (from 👁️ Iris)
+- Shared mem: `bas_pose_data` (from 👁️ Iris, via `common/shared_memory.py`)
 - `reference_poses.json` (built from reference video)
+- `common/` module (shared protocols)
 
 ## Outputs
 - `scoring/output/participant_<uuid>_score.json` (overwritten)

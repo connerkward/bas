@@ -15,8 +15,11 @@ Multi-person detection with stable UUIDs, zone gating, segmentation, NDI streami
 
 ## Outputs
 - **NDI:** `BAS_Participant_<UUID>` per participant
-- **Shared mem:** `bas_pose_data` buffer
+- **Shared mem:** `bas_pose_data` buffer (via `common/shared_memory.py`)
 - **File:** `participants_db.json`
+
+## Common Module
+Uses `common/` module for shared memory protocol definitions. When implementing `SharedMemoryPoseWriter`, import from `common/protocols.py` and `common/shared_memory.py`.
 
 ## Done check
 - 0 people → no participant NDI streams
