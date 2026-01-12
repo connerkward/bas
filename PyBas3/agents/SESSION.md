@@ -26,8 +26,8 @@ flowchart LR
     end
     
     subgraph Scoring
-        SC["Score Calculator ❌"]
-        JSON["score JSON ❌"]
+        SC["Score Calculator ✅"]
+        JSON["score JSON ✅"]
         SHM --> SC
         SC --> JSON
     end
@@ -45,26 +45,26 @@ flowchart LR
 - <!-- keep short -->
 
 ## Current state
-- **👁️ Iris**: not started
-- **🎯 Judge**: not started
+- **👁️ Iris**: MediaPipe detection + pHash implemented; needs shared memory writer
+- **🎯 Judge**: Scoring module complete (reader + scorer + JSON writer)
 - **🎨 Canvas**: TD project copied from archive
 
 ## Tasks
 
 ### Backlog
-- 👁️ Implement MediaPipe multi-person detection + pHash UUIDs
 - 👁️ NDI stream output per participant
-- 👁️ Shared memory pose buffer writer
-- 🎯 Shared memory reader + score calculator
-- 🎯 Per-UUID score JSON writer
+- 👁️ **TODO: Implement SharedMemoryPoseWriter** (connects to scoring module)
 - 🎨 TD: NDI stream discovery + UUID parsing
 - 🎨 TD: Score JSON file watcher
 
 ### In Progress
-- 🎯 Judge: Shared memory reader + score calculator
+- <!-- none -->
 
 ### Done
 - ✅ Migration: pre_render scripts + TD project from archive
+- ✅ 👁️ MediaPipe multi-person detection + pHash UUIDs
+- ✅ 🎯 Shared memory reader + score calculator
+- ✅ 🎯 Per-UUID score JSON writer
 
 ## Blockers
 - <!-- delete when resolved -->
