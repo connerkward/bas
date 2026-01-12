@@ -1,0 +1,15 @@
+{
+  "screen_region": {
+    "x": 0.0,
+    "y": 0.0,
+    "width": 1.0,
+    "height": 1.0
+  },
+  "z_range": {
+    "min": -10.0,
+    "max": 10.0
+  },
+  "max_people": 3,
+  "min_visibility": 0.1,
+  "min_landmarks": 1
+}

@@ -1,6 +1,6 @@
 # 🎯 Judge (Scoring) Status
 
-**active:** yes
-**last_updated:** 2026-01-12T14:35:00Z
-**task:** Scoring module complete; added test script
-**notes:** All scoring tasks done. SharedMemoryPoseReader, PoseScorer, reference_builder, JSON writer all implemented. Added test_scorer.py. Waiting for Iris to implement SharedMemoryPoseWriter for integration.
+**active:** no
+**last_updated:** 2026-01-12T15:30:00Z
+**task:** Common module + spin down protocol updates complete
+**notes:** Created common/ module. Updated all documentation. Updated spin down protocol to conditional commits (worktree only). All scoring tasks complete. Changes left unstaged for review (not in worktree).

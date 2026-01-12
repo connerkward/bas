@@ -31,9 +31,9 @@
    - Document test results/status in status file
 2. **Update** `SESSION.md`: what changed, current state
 3. **Update** your status file: `active: no`, summary, test status
-4. **Commit** (never push)
-
-**Note:** If working in a worktree, spin down **before** merging (so handoff docs are part of the merge).
+4. **Commit changes:**
+   - **If in worktree:** Commit changes (commits go to your branch, safe for merge)
+   - **If NOT in worktree:** Leave changes staged/unstaged for human review (never push)
 
 ## Multi-agent notes
 - Status files show committed state (may be slightly stale if another agent hasn't committed yet)
