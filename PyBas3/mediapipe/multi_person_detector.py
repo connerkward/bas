@@ -448,9 +448,20 @@ class MultiPersonDetector:
 
 
 def main():
-    """Test main function."""
+    """Main function with video source support."""
+    import argparse
+    parser = argparse.ArgumentParser(description="Multi-person pose detector")
+    parser.add_argument("--source", "-s", default="0",
+                        help="Video source: camera index (default: 0) or video file path")
+    parser.add_argument("--loop", "-l", action="store_true",
+                        help="Loop video file (for testing)")
+    args = parser.parse_args()
+    
     detector = MultiPersonDetector(num_poses=3)
-    cap = cv2.VideoCapture(0)
+    
+    # Parse source - int for camera, string for file
+    source = int(args.source) if args.source.isdigit() else args.source
+    cap = cv2.VideoCapture(source)
     
     # Set lower resolution for faster processing (reduces lag)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
@@ -465,6 +476,9 @@ def main():
         while cap.isOpened():
             ret, frame = cap.read()
             if not ret:
+                if args.loop and not str(source).isdigit():
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    continue
                 break
             
             participants = detector.detect(frame)

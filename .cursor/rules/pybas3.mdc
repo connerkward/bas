@@ -32,8 +32,9 @@ alwaysApply: true
 
 ### When user says "spin down"
 1. **Test code changes:**
-   - Run tests or verify functionality
-   - If testing not verifiable (hardware/external deps) → **FLAG USER AND PAUSE**
+   - Run `uv run python tests/test_integration.py` for integration tests
+   - Run module-specific tests if they exist
+   - If testing not verifiable → **FLAG USER AND PAUSE**
    - Document test status in status file
 2. Update `SESSION.md`: what changed, current state
 3. Update your status file: `active: no`, summary, test status
@@ -50,6 +51,11 @@ alwaysApply: true
 - Use **UV** (`uv`) as Python package manager
 - Run: `uv sync` to install deps, `uv run <script>` to execute
 - Dependencies defined in `PyBas3/pyproject.toml`
+
+## Testing
+- **Always run tests before spin down:** `cd PyBas3 && uv run python tests/test_integration.py`
+- Module tests: `scoring/test_scorer.py`, `mediapipe/test_vision.sh`
+- Vision module can use video file input for testing (no camera needed)
 
 ## Architecture
 - Each module = independent process

@@ -1,11 +1,24 @@
 #!/bin/bash
 # Automated test protocol for vision detector
 # Tests: detection, thumbnails, participant tracking, NDI streams
+#
+# Usage:
+#   ./test_vision.sh              # Use camera
+#   ./test_vision.sh video.mp4    # Use video file
 
 set -e
 
 cd "$(dirname "$0")"
-source ../.venv/bin/activate
+
+# Use uv if available, fallback to venv
+if command -v uv &> /dev/null; then
+    RUN="uv run python"
+else
+    source ../.venv/bin/activate
+    RUN="python"
+fi
+
+VIDEO_SOURCE="${1:-0}"
 
 echo "=== Vision Detector Test Protocol ==="
 echo ""
@@ -17,8 +30,8 @@ echo "   ✓ Cleared thumbnails"
 echo ""
 
 # Run detector for 5 seconds
-echo "2. Running detector for 5 seconds..."
-python multi_person_detector.py 2>&1 | \
+echo "2. Running detector for 5 seconds (source: $VIDEO_SOURCE)..."
+$RUN multi_person_detector.py --source "$VIDEO_SOURCE" 2>&1 | \
     grep -v "GL version\|INFO:\|W0000\|Model already\|inference_feedback\|landmark_projection" &
 DETECTOR_PID=$!
 sleep 5
