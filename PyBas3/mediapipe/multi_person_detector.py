@@ -30,6 +30,13 @@ class ZoneFilter:
     def __init__(self, config_path: str = "zone_config.json"):
         self.config_path = config_path
         self.config = self._load_config()
+        self._last_reload = time.time()
+    
+    def reload_if_needed(self, interval: float = 0.5):
+        """Reload config from disk if interval elapsed."""
+        if time.time() - self._last_reload > interval:
+            self.config = self._load_config()
+            self._last_reload = time.time()
     
     def _load_config(self) -> Dict:
         """Load zone configuration from JSON file."""
@@ -521,12 +528,23 @@ def main():
                     )
                     detector.ndi_streamer.send_frame(uuid, stream_frame_resized)
             
+            # Reload zone config (for live slider updates)
+            detector.zone_filter.reload_if_needed()
+            
             # Get segmentation masks for overlay
             seg_masks = detector.last_segmentation_masks
             
             # Draw pose skeleton on left side
             annotated = frame.copy()
             h, w = frame.shape[:2]
+            
+            # Draw zone rectangle
+            zone = detector.zone_filter.config["screen_region"]
+            zx1 = int(zone["x"] * w)
+            zy1 = int(zone["y"] * h)
+            zx2 = int((zone["x"] + zone["width"]) * w)
+            zy2 = int((zone["y"] + zone["height"]) * h)
+            cv2.rectangle(annotated, (zx1, zy1), (zx2, zy2), (255, 255, 0), 2)
             
             if participants:
                 for p in participants:
