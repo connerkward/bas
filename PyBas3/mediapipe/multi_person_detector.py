@@ -462,7 +462,29 @@ def main():
                         help="Video source: camera index (default: 0) or video file path")
     parser.add_argument("--loop", "-l", action="store_true",
                         help="Loop video file (for testing)")
+    parser.add_argument("--persist", "-p", action="store_true",
+                        help="Keep participants_db.json from previous run (default: clear)")
     args = parser.parse_args()
+    
+    # Clear participants by default (unless --persist)
+    if not args.persist:
+        db_path = Path(__file__).parent / "participants_db.json"
+        if db_path.exists():
+            db_path.unlink()
+            print("Cleared participants_db.json")
+        # Clear thumbnails
+        thumb_dir = Path(__file__).parent / "thumbnails"
+        if thumb_dir.exists():
+            for f in thumb_dir.glob("participant_*.jpg"):
+                f.unlink()
+            print("Cleared thumbnails")
+        # Clear score files
+        score_dir = Path(__file__).parent.parent / "scoring" / "output"
+        if score_dir.exists():
+            for f in score_dir.glob("participant_*_score.json"):
+                if "test" not in f.name:
+                    f.unlink()
+            print("Cleared score files")
     
     detector = MultiPersonDetector(num_poses=3)
     
@@ -538,13 +560,20 @@ def main():
             annotated = frame.copy()
             h, w = frame.shape[:2]
             
-            # Draw zone rectangle
+            # Draw zone rectangle with semi-transparent fill
             zone = detector.zone_filter.config["screen_region"]
             zx1 = int(zone["x"] * w)
             zy1 = int(zone["y"] * h)
             zx2 = int((zone["x"] + zone["width"]) * w)
             zy2 = int((zone["y"] + zone["height"]) * h)
-            cv2.rectangle(annotated, (zx1, zy1), (zx2, zy2), (255, 255, 0), 2)
+            # Draw semi-transparent cyan fill
+            overlay = annotated.copy()
+            cv2.rectangle(overlay, (zx1, zy1), (zx2, zy2), (255, 255, 0), -1)
+            cv2.addWeighted(overlay, 0.15, annotated, 0.85, 0, annotated)
+            # Draw thick border
+            cv2.rectangle(annotated, (zx1, zy1), (zx2, zy2), (0, 255, 255), 3)
+            # Label
+            cv2.putText(annotated, "ZONE", (zx1 + 5, zy1 + 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
             
             if participants:
                 for p in participants:
