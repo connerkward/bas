@@ -55,7 +55,8 @@ alwaysApply: true
 ## Testing
 - **Always run tests before spin down:** `cd PyBas3 && uv run python tests/test_integration.py`
 - Module tests: `scoring/test_scorer.py`, `mediapipe/test_vision.sh`
-- Vision module can use video file input for testing (no camera needed)
+- Integration tests don't need camera (test shared memory + JSON)
+- Full Vision/NDI end-to-end requires camera
 
 ## Architecture
 - Each module = independent process
