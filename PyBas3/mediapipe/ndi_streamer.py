@@ -36,9 +36,8 @@ class NDIStreamer:
             return
         
         # Create NDI finder
-        find_create = ndi.FindCreateV2()
+        find_create = ndi.FindCreate()
         find_create.show_local_sources = True
-        find_create.bandwidth = ndi.FIND_BANDWIDTH_HIGHEST
         self.ndi_find = ndi.find_create_v2(find_create)
         
         # Create NDI sender
@@ -78,7 +77,7 @@ class NDIStreamer:
         video_frame.picture_aspect_ratio = width / height
         
         # Allocate buffer for BGRA frame
-        video_frame.p_data = np.zeros((height, width, 4), dtype=np.uint8)
+        video_frame.data = np.zeros((height, width, 4), dtype=np.uint8)
         
         self.streams[uuid] = {
             "name": stream_name,
@@ -113,7 +112,7 @@ class NDIStreamer:
             frame_bgra = cv2.resize(frame_bgra, (stream["width"], stream["height"]))
         
         # Copy frame data to NDI buffer
-        video_frame.p_data[:] = frame_bgra
+        video_frame.data[:] = frame_bgra
         
         # Send frame
         ndi.send_send_video_v2(self.ndi_send, video_frame)
