@@ -1,0 +1,68 @@
+---
+description: PyBas3 project rules for AI-powered development
+alwaysApply: true
+---
+
+# Cursor AI Rules for PyBas3
+
+## Agent Roster
+| Emoji | Nickname | Lane |
+|-------|----------|------|
+| 👁️ | Iris | Vision (MediaPipe → NDI + shared mem) |
+| 🎯 | Judge | Scoring (pose → score JSON) |
+| 🎨 | Canvas | TouchDesigner (NDI + JSON → visuals) |
+
+## Command handlers
+
+### When user says "spin up"
+1. Read `PyBas3/agents/SESSION.md` for context + tasks
+2. **Claim role:**
+   - If user specified (e.g. "spin up as Iris") → use that role
+   - If not specified → read `status/*` files, pick first available role:
+     - `active: no` → available
+     - `active: yes` but `last_updated` >2 hours → stale, available
+   - If still unclear → ask user
+3. Update YOUR status file: `status/agent_<N>_<lane>.md`
+   - Set `active: yes`, `last_updated: <ISO timestamp>`, task
+4. **Commit status file** (makes your claim visible to other agents)
+5. Pick a task from backlog matching your lane
+6. Start working following `AGENT_0_SHARED.md` contracts
+
+### When user says "spin down"
+1. **Test code changes:**
+   - Run tests or verify functionality
+   - If testing not verifiable (hardware/external deps) → **FLAG USER AND PAUSE**
+   - Document test status in status file
+2. Update `SESSION.md`: what changed, current state
+3. Update your status file: `active: no`, summary, test status
+4. **Commit changes:**
+   - **If in worktree:** Commit changes (commits go to your branch, safe for merge)
+   - **If NOT in worktree:** Leave changes staged/unstaged for human review (never push)
+
+## Project context
+Interactive projection system with multi-person pose tracking:
+- MediaPipe vision → NDI streams + shared memory
+- Scoring process → per-UUID JSON files
+- TouchDesigner → consumes NDI + score JSON
+
+## Key contracts
+- NDI stream names: `BAS_Participant_<UUID>`
+- Shared memory buffer: `bas_pose_data`
+- Score output: `PyBas3/scoring/output/participant_<uuid>_score.json`
+- Participant DB: `PyBas3/mediapipe/participants_db.json`
+
+## Code style
+- Python: PEP 8, type hints preferred
+- Concise comments
+- No emojis in code (docs are fine)
+
+## Architecture
+- Each module = independent process
+- No shared Python state; communicate via NDI, shared memory, or files
+- Atomic writes (temp → rename) for persistent data
+
+## Don't
+- Modify `dist/` folders
+- Git push (human does that)
+- Over-engineer
+- Edit another agent's status file (only your own)
