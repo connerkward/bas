@@ -53,7 +53,7 @@ flowchart LR
 
 ### Backlog
 - 👁️ NDI stream output per participant
-- 👁️ **TODO: Implement SharedMemoryPoseWriter** (connects to scoring module)
+- 👁️ **TODO: Implement SharedMemoryPoseWriter** (use `common/` module for protocols)
 - 🎨 TD: NDI stream discovery + UUID parsing
 - 🎨 TD: Score JSON file watcher
 
@@ -65,6 +65,7 @@ flowchart LR
 - ✅ 👁️ MediaPipe multi-person detection + pHash UUIDs
 - ✅ 🎯 Shared memory reader + score calculator
 - ✅ 🎯 Per-UUID score JSON writer
+- ✅ Common module: shared protocols & constants (`common/protocols.py`, `common/shared_memory.py`)
 
 ## Blockers
 - <!-- delete when resolved -->

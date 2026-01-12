@@ -3,22 +3,32 @@
 Shared memory reader for pose data from Vision module.
 
 Reads from `bas_pose_data` buffer written by SharedMemoryPoseWriter.
+Uses common module for protocol definitions.
 """
 
-import struct
 from multiprocessing import shared_memory
 from typing import List, Dict, Optional
+import sys
+from pathlib import Path
+
+# Add parent directory to path for common module
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from common.protocols import SHARED_MEMORY_BUFFER_NAME, MAX_PARTICIPANTS, POSE_RECORD_SIZE
+from common.shared_memory import decode_pose
 
 
 class SharedMemoryPoseReader:
     """Reads pose data from shared memory buffer."""
     
-    def __init__(self, buffer_name: str = 'bas_pose_data', max_participants: int = 3):
+    def __init__(
+        self,
+        buffer_name: str = SHARED_MEMORY_BUFFER_NAME,
+        max_participants: int = MAX_PARTICIPANTS
+    ):
         self.buffer_name = buffer_name
         self.max_participants = max_participants
-        # Per record: uuid(36) + timestamp(8) + keypoints(33*4*4) + in_zone(1) = 573 bytes
-        self.record_size = 36 + 8 + (33 * 4 * 4) + 1
-        self.buffer_size = self.record_size * max_participants
+        self.record_size = POSE_RECORD_SIZE
         self.shm: Optional[shared_memory.SharedMemory] = None
     
     def connect(self) -> bool:
@@ -43,38 +53,11 @@ class SharedMemoryPoseReader:
         offset = 0
         
         for _ in range(self.max_participants):
-            # Read UUID (36 bytes, null-padded)
-            uuid_bytes = bytes(self.shm.buf[offset:offset + 36])
-            uuid = uuid_bytes.decode('utf-8').strip('\x00')
-            
-            if not uuid:
-                # Empty slot, skip
-                offset += self.record_size
-                continue
-            
-            offset += 36
-            
-            # Read timestamp (8 bytes, double)
-            timestamp = struct.unpack_from('d', self.shm.buf, offset)[0]
-            offset += 8
-            
-            # Read 33 keypoints (4 floats each: x, y, z, visibility)
-            keypoints = []
-            for _ in range(33):
-                x, y, z, vis = struct.unpack_from('ffff', self.shm.buf, offset)
-                keypoints.append((x, y, z, vis))
-                offset += 16
-            
-            # Read in_zone flag (1 byte)
-            in_zone = bool(self.shm.buf[offset])
-            offset += 1
-            
-            poses.append({
-                'uuid': uuid,
-                'timestamp': timestamp,
-                'keypoints': keypoints,
-                'in_zone': in_zone
-            })
+            pose = decode_pose(self.shm.buf, offset)
+            if pose:
+                # Convert ParticipantPose to dict format for compatibility
+                poses.append(pose.to_dict())
+            offset += self.record_size
         
         return poses
     
