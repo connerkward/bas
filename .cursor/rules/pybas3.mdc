@@ -5,14 +5,15 @@ alwaysApply: true
 
 # Cursor AI Rules for PyBas3
 
-## Agent Roster
-| Emoji | Nickname | Lane |
-|-------|----------|------|
-| 👁️ | Iris | Vision (MediaPipe → NDI + shared mem) |
-| 🎯 | Judge | Scoring (pose → score JSON) |
-| 🎨 | Canvas | TouchDesigner (NDI + JSON → visuals) |
+## Key Files
+| Purpose | File |
+|---------|------|
+| Tasks & handoff | `PyBas3/agents/SESSION.md` |
+| Contracts & protocols | `PyBas3/agents/AGENT_0_SHARED.md` |
+| Technical reference | `PyBas3/TECHNICAL_REFERENCE.md` |
+| Agent status | `PyBas3/agents/status/` |
 
-## Command handlers
+## Command Handlers
 
 ### When user says "spin up"
 1. Read `PyBas3/agents/SESSION.md` for context + tasks
@@ -39,22 +40,15 @@ alwaysApply: true
    - **If in worktree:** Commit changes (commits go to your branch, safe for merge)
    - **If NOT in worktree:** Leave changes staged/unstaged for human review (never push)
 
-## Project context
-Interactive projection system with multi-person pose tracking:
-- MediaPipe vision → NDI streams + shared memory
-- Scoring process → per-UUID JSON files
-- TouchDesigner → consumes NDI + score JSON
-
-## Key contracts
-- NDI stream names: `BAS_Participant_<UUID>`
-- Shared memory buffer: `bas_pose_data`
-- Score output: `PyBas3/scoring/output/participant_<uuid>_score.json`
-- Participant DB: `PyBas3/mediapipe/participants_db.json`
-
-## Code style
+## Code Style
 - Python: PEP 8, type hints preferred
 - Concise comments
 - No emojis in code (docs are fine)
+
+## Package Management
+- Use **UV** (`uv`) as Python package manager
+- Run: `uv sync` to install deps, `uv run <script>` to execute
+- Dependencies defined in `PyBas3/pyproject.toml`
 
 ## Architecture
 - Each module = independent process

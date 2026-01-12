@@ -236,14 +236,23 @@ Per-participant video capture from NDI streams with JSON metadata.
 
 ## Dependencies
 
+**Package Manager:** UV (`uv`)
+
+```bash
+# Install dependencies
+cd PyBas3 && uv sync
+
+# Run scripts
+uv run python mediapipe/multi_person_detector.py
 ```
-opencv-python>=4.8.0
-mediapipe>=0.10.0
-numpy>=1.24.0
-ndi-python>=1.1.0
-requests>=2.31.0
-Pillow>=10.0.0
-```
+
+Packages (defined in `pyproject.toml`):
+- opencv-python>=4.8.0
+- mediapipe>=0.10.0
+- numpy>=1.24.0
+- ndi-python>=1.1.0
+- requests>=2.31.0
+- Pillow>=10.0.0
 
 ---
 

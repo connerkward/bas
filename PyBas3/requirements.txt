@@ -1,3 +1,4 @@
+# Legacy requirements.txt - use `uv sync` with pyproject.toml instead
 opencv-python>=4.8.0
 mediapipe>=0.10.0
 numpy>=1.24.0

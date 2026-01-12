@@ -1,0 +1,18 @@
+[project]
+name = "pybas3"
+version = "0.1.0"
+description = "Multi-person pose tracking with NDI streaming for interactive projection"
+requires-python = ">=3.10,<3.11"
+dependencies = [
+    "opencv-python>=4.8.0",
+    "mediapipe>=0.10.0",
+    "numpy>=1.24.0",
+    "requests>=2.31.0",
+    "Pillow>=10.0.0",
+]
+
+[project.optional-dependencies]
+ndi = ["ndi-python>=1.1.0"]  # Requires Python 3.10 exactly
+
+[dependency-groups]
+dev = []
