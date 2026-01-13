@@ -13,6 +13,7 @@ from PIL import Image
 from transformers import pipeline
 from concurrent.futures import ThreadPoolExecutor
 import time
+from tqdm import tqdm
 
 
 def log(step: str, detail: str = "", frame: int = None, total: int = None):
@@ -126,7 +127,7 @@ def extract_frames(video_path: str, num_frames: int, output_dir: str,
     os.makedirs(output_dir, exist_ok=True)
     frame_paths = []
     
-    for idx, frame_num in enumerate(frame_indices):
+    for idx, frame_num in enumerate(tqdm(frame_indices, desc="Extracting frames", unit="frame")):
         cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
         ret, frame = cap.read()
         if ret:
@@ -134,8 +135,6 @@ def extract_frames(video_path: str, num_frames: int, output_dir: str,
             frame_path = os.path.join(output_dir, f"frame_{idx:04d}.png")
             cv2.imwrite(frame_path, processed)
             frame_paths.append(frame_path)
-            if idx % 10 == 0:
-                log("EXTRACT", "frame", idx + 1, num_frames)
     
     cap.release()
     log("EXTRACT", f"Done - {len(frame_paths)} frames (greenscreen={has_greenscreen})")
@@ -360,10 +359,13 @@ def main():
     
     args = parser.parse_args()
     
-    # Generate output dir from video filename
+    # Generate output dir from video filename, defaulting under pre_render/outputs
     if args.output_dir is None:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        default_root = os.path.join(script_dir, "outputs")
+        os.makedirs(default_root, exist_ok=True)
         video_basename = os.path.splitext(os.path.basename(args.video_path))[0]
-        args.output_dir = f"{video_basename}_blend_output"
+        args.output_dir = os.path.join(default_root, f"{video_basename}_blend_output")
     
     log("INIT", f"Processing {args.video_path}")
     log("INIT", f"Device: {args.device}, Workers: {args.workers}, Batch: {args.batch_size}")
@@ -404,48 +406,50 @@ def main():
     depth_images = []
     
     # Process in batches
-    for batch_start in range(0, len(frame_paths), args.batch_size):
-        batch_end = min(batch_start + args.batch_size, len(frame_paths))
-        batch_paths = frame_paths[batch_start:batch_end]
-        
-        # Load batch images
-        batch_images = [Image.open(p) for p in batch_paths]
-        
-        # Run depth on batch
-        results = pipe(batch_images)
-        
-        for i, (result, frame_path) in enumerate(zip(results, batch_paths)):
-            idx = batch_start + i
-            depth_map = result["depth"]
-            depth_array = np.array(depth_map)
+    num_batches = (len(frame_paths) + args.batch_size - 1) // args.batch_size
+    with tqdm(total=len(frame_paths), desc="Depth estimation", unit="frame") as pbar:
+        for batch_start in range(0, len(frame_paths), args.batch_size):
+            batch_end = min(batch_start + args.batch_size, len(frame_paths))
+            batch_paths = frame_paths[batch_start:batch_end]
             
-            # Get subject mask
-            orig_frame = cv2.imread(frame_path)
-            fg_mask = extract_subject_mask(orig_frame, has_greenscreen)
+            # Load batch images
+            batch_images = [Image.open(p) for p in batch_paths]
             
-            # Resize mask if needed
-            if fg_mask.shape != depth_array.shape:
-                fg_mask = cv2.resize(fg_mask, (depth_array.shape[1], depth_array.shape[0]))
+            # Run depth on batch
+            results = pipe(batch_images)
             
-            # Normalize depth
-            depth_min, depth_max = depth_array.min(), depth_array.max()
-            if depth_max > depth_min:
-                depth_norm = (depth_array - depth_min) / (depth_max - depth_min)
-            else:
-                depth_norm = np.zeros_like(depth_array, dtype=np.float32)
+            for i, (result, frame_path) in enumerate(zip(results, batch_paths)):
+                idx = batch_start + i
+                depth_map = result["depth"]
+                depth_array = np.array(depth_map)
+                
+                # Get subject mask
+                orig_frame = cv2.imread(frame_path)
+                fg_mask = extract_subject_mask(orig_frame, has_greenscreen)
+                
+                # Resize mask if needed
+                if fg_mask.shape != depth_array.shape:
+                    fg_mask = cv2.resize(fg_mask, (depth_array.shape[1], depth_array.shape[0]))
+                
+                # Normalize depth
+                depth_min, depth_max = depth_array.min(), depth_array.max()
+                if depth_max > depth_min:
+                    depth_norm = (depth_array - depth_min) / (depth_max - depth_min)
+                else:
+                    depth_norm = np.zeros_like(depth_array, dtype=np.float32)
+                
+                depth_gray = (depth_norm * 255).astype(np.uint8)
+                
+                # For greenscreen: mask background. For regular: keep full depth
+                if has_greenscreen:
+                    depth_gray = cv2.bitwise_and(depth_gray, depth_gray, mask=fg_mask)
+                
+                depth_images.append(depth_gray)
+                
+                path = os.path.join(depth_maps_dir, f"depth_{idx:04d}.png")
+                Image.fromarray(depth_gray, mode='L').save(path)
             
-            depth_gray = (depth_norm * 255).astype(np.uint8)
-            
-            # For greenscreen: mask background. For regular: keep full depth
-            if has_greenscreen:
-                depth_gray = cv2.bitwise_and(depth_gray, depth_gray, mask=fg_mask)
-            
-            depth_images.append(depth_gray)
-            
-            path = os.path.join(depth_maps_dir, f"depth_{idx:04d}.png")
-            Image.fromarray(depth_gray, mode='L').save(path)
-        
-        log("DEPTH", f"batch {batch_start//args.batch_size + 1}", batch_end, len(frame_paths))
+            pbar.update(len(batch_paths))
     
     log("DEPTH", f"Done - {len(depth_images)} depth maps")
     
@@ -489,19 +493,19 @@ def main():
     with ThreadPoolExecutor(max_workers=args.workers) as executor:
         # Floyd-Steinberg
         floyd_args = [(i, p, dithered_dir, "floyd") for i, p in enumerate(frame_paths)]
-        floyd_results = list(executor.map(process_dither_frame, floyd_args))
+        floyd_results = list(tqdm(executor.map(process_dither_frame, floyd_args), 
+                                  total=len(floyd_args), desc="Dithering (Floyd-Steinberg)", unit="frame"))
         dithered_images = [r for r in floyd_results if r is not None]
-        log("DITHER", "Floyd-Steinberg done")
         
         # Atkinson
         atk_args = [(i, p, atkinson_dir, "atkinson") for i, p in enumerate(frame_paths)]
-        list(executor.map(process_dither_frame, atk_args))
-        log("DITHER", "Atkinson done")
+        list(tqdm(executor.map(process_dither_frame, atk_args), 
+                  total=len(atk_args), desc="Dithering (Atkinson)", unit="frame"))
         
         # Bayer
         bayer_args = [(i, p, bayer_dir, "bayer") for i, p in enumerate(frame_paths)]
-        list(executor.map(process_dither_frame, bayer_args))
-        log("DITHER", "Bayer done")
+        list(tqdm(executor.map(process_dither_frame, bayer_args), 
+                  total=len(bayer_args), desc="Dithering (Bayer)", unit="frame"))
     
     # Parallel pixelated frames with adaptive threshold
     log("PIXEL", "Creating pixelated frames (parallel)...")
@@ -515,24 +519,24 @@ def main():
     with ThreadPoolExecutor(max_workers=args.workers) as executor:
         # Extract (8x downscale)
         extract_args = [(i, p, extract_dir, 8, frame_stats) for i, p in enumerate(frame_paths)]
-        list(executor.map(process_pixel_frame, extract_args))
-        log("PIXEL", "Extract done")
+        list(tqdm(executor.map(process_pixel_frame, extract_args), 
+                  total=len(extract_args), desc="Pixelation (Extract)", unit="frame"))
         
         # Lowres (16x downscale)
         lowres_args = [(i, p, lowres_dir, 16, frame_stats) for i, p in enumerate(frame_paths)]
-        list(executor.map(process_pixel_frame, lowres_args))
-        log("PIXEL", "Lowres done")
+        list(tqdm(executor.map(process_pixel_frame, lowres_args), 
+                  total=len(lowres_args), desc="Pixelation (Lowres)", unit="frame"))
         
         # Microres (24x downscale)
         micro_args = [(i, p, microres_dir, 24, frame_stats) for i, p in enumerate(frame_paths)]
-        list(executor.map(process_pixel_frame, micro_args))
-        log("PIXEL", "Microres done")
+        list(tqdm(executor.map(process_pixel_frame, micro_args), 
+                  total=len(micro_args), desc="Pixelation (Microres)", unit="frame"))
     
     # Red overlay frames
     log("EFFECT", "Creating red overlay frames...")
     red_overlay_dir = os.path.join(args.output_dir, "red_overlay")
     os.makedirs(red_overlay_dir, exist_ok=True)
-    for idx, frame_path in enumerate(frame_paths):
+    for idx, frame_path in enumerate(tqdm(frame_paths, desc="Red overlay", unit="frame")):
         frame = cv2.imread(frame_path)
         if frame is None:
             continue
@@ -564,7 +568,7 @@ def main():
     rainbow_dir = os.path.join(args.output_dir, "rainbow_trail")
     os.makedirs(rainbow_dir, exist_ok=True)
     
-    for idx, frame_path in enumerate(frame_paths):
+    for idx, frame_path in enumerate(tqdm(frame_paths, desc="Rainbow trail", unit="frame")):
         frame = cv2.imread(frame_path)
         if frame is None:
             continue
@@ -614,9 +618,6 @@ def main():
         result = np.clip(result + noise, 0, 255).astype(np.uint8)
         Image.fromarray(cv2.cvtColor(result, cv2.COLOR_BGR2RGB)).save(
             os.path.join(rainbow_dir, f"frame_{idx:04d}.png"))
-        
-        if idx % 10 == 0:
-            log("EFFECT", "rainbow", idx + 1, len(frame_paths))
     log("EFFECT", "Rainbow trail done")
     
     # Depth banding
@@ -624,7 +625,7 @@ def main():
     banding_dir = os.path.join(args.output_dir, "depth_banding")
     os.makedirs(banding_dir, exist_ok=True)
     
-    for idx, frame_path in enumerate(frame_paths):
+    for idx, frame_path in enumerate(tqdm(frame_paths, desc="Depth banding", unit="frame")):
         frame = cv2.imread(frame_path)
         if frame is None:
             continue
@@ -652,15 +653,12 @@ def main():
         noise_mask = np.random.random((h, w)) < (depth.astype(np.float32) / 255.0 * 0.1)
         result = np.where(noise_mask, 255, result).astype(np.uint8)
         Image.fromarray(result, mode='L').save(os.path.join(banding_dir, f"frame_{idx:04d}.png"))
-        
-        if idx % 10 == 0:
-            log("EFFECT", "banding", idx + 1, len(frame_paths))
     log("EFFECT", "Depth banding done")
     
     # Chronophotography composites
     log("CHRONO", "Creating blend composites...")
     for mode in args.blend_modes:
-        for idx in range(len(resized_depths)):
+        for idx in tqdm(range(len(resized_depths)), desc=f"Blend ({mode})", unit="frame"):
             frames_so_far = resized_depths[:idx + 1]
             depth_result = create_chronophotography(frames_so_far, mode)
             depth_rgb = cv2.cvtColor(depth_result, cv2.COLOR_GRAY2RGB)
@@ -696,7 +694,7 @@ def main():
                     "lowres", "microres", "red_overlay", "rainbow_trail", "depth_banding"]
     pass_folders.extend(args.blend_modes)
     
-    for folder in pass_folders:
+    for folder in tqdm(pass_folders, desc="Creating videos", unit="video"):
         folder_path = os.path.join(args.output_dir, folder)
         if not os.path.exists(folder_path):
             continue
@@ -715,7 +713,7 @@ def main():
         h, w = first_frame.shape[:2]
         video_path = os.path.join(videos_dir, f"{folder}.mp4")
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        out = cv2.VideoWriter(video_path, fourcc, 12.0, (w, h))
+        out = cv2.VideoWriter(video_path, fourcc, args.target_fps, (w, h))
         
         for frame_file in frame_files:
             frame = cv2.imread(os.path.join(folder_path, frame_file))
