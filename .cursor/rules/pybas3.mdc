@@ -26,8 +26,7 @@ alwaysApply: true
    - If still unclear → ask user
 3. Update YOUR status file: `status/agent_<N>_<lane>.md`
    - Set `active: yes`, `last_updated: <ISO timestamp>`, task
-4. **Commit status file** (makes your claim visible to other agents)
-5. Pick a task from backlog matching your lane
+4. Pick a task from backlog matching your lane
 6. Start working following `AGENT_0_SHARED.md` contracts
 
 ### When user says "spin down"
@@ -38,9 +37,7 @@ alwaysApply: true
    - Document test status in status file
 2. Update `SESSION.md`: what changed, current state
 3. Update your status file: `active: no`, summary, test status
-4. **Commit changes:**
-   - **If in worktree:** Commit changes (commits go to your branch, safe for merge)
-   - **If NOT in worktree:** Leave changes staged/unstaged for human review (never push)
+4. **DO NOT COMMIT** - leave changes for human to review and commit
 
 ## Code Style
 - Python: PEP 8, type hints preferred

@@ -1,6 +1,6 @@
 # Session Handoff
 
-**Last updated:** 2026-01-12 23:15
+**Last updated:** 2026-01-12 23:50
 
 > **Commands:** "spin up" / "spin down" → see `AGENT_0_SHARED.md`  
 > **Agent roster:** see `AGENT_0_SHARED.md`
@@ -11,7 +11,7 @@
 flowchart LR
     subgraph Vision
         MP["MediaPipe ✅"]
-        NDI["NDI Streams ⚠️"]
+        NDI["NDI Streams ✅"]
         SHM["Shared Memory ✅"]
         DB["participants_db ✅"]
         MP --> NDI
@@ -36,19 +36,23 @@ flowchart LR
 **Legend:** ✅ done | ⚠️ partial | ❌ not started
 
 ## What changed last session
-- 🔄 Orchestrator: Created `tests/test_integration.py` (4 integration tests)
-- 🔄 Orchestrator: Fixed UUID decoding bug in `common/shared_memory.py` (strip whitespace)
-- 🔄 Orchestrator: All integration tests passing (shared memory, scoring, TD watcher, NDI parsing)
+- 🔄 Orchestrator: Fixed NDI API (`FindCreate`, `video_frame.data`) in `ndi_streamer.py`
+- 🔄 Orchestrator: Per-participant NDI streams working (`BAS_Participant_<UUID>`)
+- 👁️ Iris: Zone UI integrated into main detector window (sliders + click-to-set corners)
+- 👁️ Iris: Z-depth visualization (shows avg Z per person, green/red in/out indicator)
+- 👁️ Iris: Segmentation mask tuned for tighter body contour fit
+- 👁️ Iris: Added `--persist` flag (default clears participants/scores on startup)
+- 📝 Removed all git commit instructions from rules/docs
 
 ## Current state
-- **👁️ Iris**: MediaPipe detection + pHash + shared memory writer ✅; NDI streams integrated (pending ndi-python install)
-- **🎯 Judge**: Scoring module complete (reader + scorer + JSON writer)
-- **🎨 Canvas**: TD helper scripts complete (ndi_discovery, score_watcher, td_participant_manager); needs GUI integration
+- **👁️ Iris**: MediaPipe detection + pHash + shared memory + per-participant NDI streams ✅; zone UI with sliders + click-to-set ✅
+- **🎯 Judge**: Scoring module complete (reader + scorer + JSON writer) ✅
+- **🎨 Canvas**: TD helper scripts complete; needs GUI integration in TouchDesigner
 
 ## Tasks
 
 ### Backlog
-- 👁️ NDI stream output per participant (code ready, needs ndi-python dependency)
+- 🎨 TouchDesigner GUI integration (wire up helper scripts)
 
 ### In Progress
 - <!-- none -->
@@ -65,6 +69,8 @@ flowchart LR
 - ✅ 🎨 TD: Unified ParticipantManager (`td_scripts/td_participant_manager.py`)
 - ✅ UV package manager setup (`pyproject.toml`)
 - ✅ 🔄 Integration tests (`tests/test_integration.py`) - all 4 passing
+- ✅ 👁️ Per-participant NDI streams (`BAS_Participant_<UUID>`)
+- ✅ 👁️ Zone UI: sliders + click-to-set corners + Z-depth visualization
 
 ## Blockers
 - <!-- delete when resolved -->

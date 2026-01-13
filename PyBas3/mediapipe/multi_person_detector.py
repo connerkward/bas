@@ -27,7 +27,9 @@ from shared_memory_writer import SharedMemoryPoseWriter
 class ZoneFilter:
     """Filters detections based on zone configuration."""
     
-    def __init__(self, config_path: str = "zone_config.json"):
+    def __init__(self, config_path: str = None):
+        if config_path is None:
+            config_path = str(Path(__file__).parent / "zone_config.json")
         self.config_path = config_path
         self.config = self._load_config()
         self._last_reload = time.time()
@@ -37,6 +39,14 @@ class ZoneFilter:
         if time.time() - self._last_reload > interval:
             self.config = self._load_config()
             self._last_reload = time.time()
+    
+    def save_config(self):
+        """Save current config to disk."""
+        import json
+        tmp_path = self.config_path + ".tmp"
+        with open(tmp_path, 'w') as f:
+            json.dump(self.config, f, indent=2)
+        os.rename(tmp_path, self.config_path)
     
     def _load_config(self) -> Dict:
         """Load zone configuration from JSON file."""
@@ -231,19 +241,20 @@ class MultiPersonDetector:
                     # Convert to uint8 for processing
                     mask_uint8 = (mask_np * 255).astype(np.uint8)
                     
-                    # Apply Gaussian blur to smooth edges before thresholding
+                    # Light blur to reduce pixel noise while preserving contour
                     mask_blurred = cv2.GaussianBlur(mask_uint8, (5, 5), 0)
                     
-                    # Apply threshold for hard edges (more robust: use Otsu's method or fixed threshold)
-                    # Increased threshold to 140 for tighter edges
-                    _, mask_binary = cv2.threshold(mask_blurred, 140, 255, cv2.THRESH_BINARY)
+                    # Higher threshold = tighter fit to body
+                    _, mask_binary = cv2.threshold(mask_blurred, 160, 255, cv2.THRESH_BINARY)
                     
-                    # Clean up mask: remove small noise, fill holes with larger kernels and iterations
-                    kernel_close = np.ones((7, 7), np.uint8) # Larger kernel for closing
-                    kernel_open = np.ones((5, 5), np.uint8)  # Larger kernel for opening
+                    # Small morphological ops - just remove speckles, don't fill gaps
+                    kernel_small = np.ones((3, 3), np.uint8)
+                    mask_binary = cv2.morphologyEx(mask_binary, cv2.MORPH_OPEN, kernel_small, iterations=1)  # remove noise
+                    mask_binary = cv2.morphologyEx(mask_binary, cv2.MORPH_CLOSE, kernel_small, iterations=1) # fill tiny holes
                     
-                    mask_binary = cv2.morphologyEx(mask_binary, cv2.MORPH_CLOSE, kernel_close, iterations=2) # Fill holes more aggressively
-                    mask_binary = cv2.morphologyEx(mask_binary, cv2.MORPH_OPEN, kernel_open, iterations=2)  # Remove noise more aggressively
+                    # Gentle edge smoothing via blur + threshold
+                    mask_binary = cv2.GaussianBlur(mask_binary, (5, 5), 0)
+                    _, mask_binary = cv2.threshold(mask_binary, 127, 255, cv2.THRESH_BINARY)
                     
                     # Find the largest contour and keep only that (removes stray blobs)
                     contours, _ = cv2.findContours(mask_binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -363,9 +374,17 @@ class MultiPersonDetector:
                     _, mask_binary = cv2.threshold(mask_uint8, 127, 255, cv2.THRESH_BINARY)
                     
                     # Apply morphological operations to clean up mask (remove noise, fill holes)
+                    # Light smoothing - preserve body contour
+                    mask_binary = cv2.GaussianBlur(mask_binary, (5, 5), 0)
+                    _, mask_binary = cv2.threshold(mask_binary, 160, 255, cv2.THRESH_BINARY)
+                    
                     kernel = np.ones((3, 3), np.uint8)
-                    mask_binary = cv2.morphologyEx(mask_binary, cv2.MORPH_CLOSE, kernel)
-                    mask_binary = cv2.morphologyEx(mask_binary, cv2.MORPH_OPEN, kernel)
+                    mask_binary = cv2.morphologyEx(mask_binary, cv2.MORPH_OPEN, kernel, iterations=1)
+                    mask_binary = cv2.morphologyEx(mask_binary, cv2.MORPH_CLOSE, kernel, iterations=1)
+                    
+                    # Gentle edge smoothing
+                    mask_binary = cv2.GaussianBlur(mask_binary, (5, 5), 0)
+                    _, mask_binary = cv2.threshold(mask_binary, 127, 255, cv2.THRESH_BINARY)
                     
                     # Apply mask to extract person (hard edges)
                     output = cv2.bitwise_and(frame, frame, mask=mask_binary)
@@ -501,6 +520,98 @@ def main():
     actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     print(f"Camera resolution: {actual_w}x{actual_h}")
     
+    # Create window with zone config trackbars
+    cv2.namedWindow("Pose Detection + Segmentation", cv2.WINDOW_NORMAL)
+    
+    def save_zone_config():
+        """Save current zone config to disk."""
+        detector.zone_filter.save_config()
+    
+    def on_zone_x(v):
+        detector.zone_filter.config["screen_region"]["x"] = v / 100.0
+        save_zone_config()
+    def on_zone_y(v):
+        detector.zone_filter.config["screen_region"]["y"] = v / 100.0
+        save_zone_config()
+    def on_zone_w(v):
+        detector.zone_filter.config["screen_region"]["width"] = max(1, v) / 100.0
+        save_zone_config()
+    def on_zone_h(v):
+        detector.zone_filter.config["screen_region"]["height"] = max(1, v) / 100.0
+        save_zone_config()
+    
+    # Get initial values from config
+    cfg = detector.zone_filter.config["screen_region"]
+    z_cfg = detector.zone_filter.config["z_range"]
+    cv2.createTrackbar("Zone X %", "Pose Detection + Segmentation", int(cfg["x"] * 100), 100, on_zone_x)
+    cv2.createTrackbar("Zone Y %", "Pose Detection + Segmentation", int(cfg["y"] * 100), 100, on_zone_y)
+    cv2.createTrackbar("Zone W %", "Pose Detection + Segmentation", int(cfg["width"] * 100), 100, on_zone_w)
+    cv2.createTrackbar("Zone H %", "Pose Detection + Segmentation", int(cfg["height"] * 100), 100, on_zone_h)
+    
+    # Z range sliders (-1.0 to 1.0 mapped to 0-100)
+    def z_to_slider(z): return max(0, min(100, int((z + 1.0) * 50)))  # -1 to 1 -> 0 to 100
+    def slider_to_z(v): return (v / 50.0) - 1.0    # 0 to 100 -> -1 to 1
+    
+    def on_z_min(v):
+        detector.zone_filter.config["z_range"]["min"] = slider_to_z(v)
+        save_zone_config()
+    def on_z_max(v):
+        detector.zone_filter.config["z_range"]["max"] = slider_to_z(v)
+        save_zone_config()
+    
+    # Clamp initial Z values to valid range for sliders
+    z_min_init = max(-1.0, min(1.0, z_cfg.get("min", -1.0)))
+    z_max_init = max(-1.0, min(1.0, z_cfg.get("max", 1.0)))
+    cv2.createTrackbar("Z Min", "Pose Detection + Segmentation", z_to_slider(z_min_init), 100, on_z_min)
+    cv2.createTrackbar("Z Max", "Pose Detection + Segmentation", z_to_slider(z_max_init), 100, on_z_max)
+    
+    # Click-to-set-zone state
+    zone_corners = []
+    
+    def mouse_callback(event, x, y, flags, param):
+        nonlocal zone_corners
+        if event == cv2.EVENT_LBUTTONDOWN:
+            # Only accept clicks on left side (pose skeleton view)
+            if x >= actual_w:
+                print(f"Click on LEFT side (pose view) to set zone, not right side")
+                return
+            # Click sets zone corner (need 2 clicks: top-left, bottom-right)
+            zone_corners.append((x, y))
+            if len(zone_corners) == 2:
+                # Calculate zone from two corners
+                x1, y1 = zone_corners[0]
+                x2, y2 = zone_corners[1]
+                # Normalize to 0-1 (combined view is 2*w wide)
+                frame_w = actual_w  # single frame width
+                norm_x = min(x1, x2) / frame_w
+                norm_y = min(y1, y2) / actual_h
+                norm_w = abs(x2 - x1) / frame_w
+                norm_h = abs(y2 - y1) / actual_h
+                # Clamp to valid range
+                norm_x = max(0, min(1, norm_x))
+                norm_y = max(0, min(1, norm_y))
+                norm_w = max(0.01, min(1 - norm_x, norm_w))
+                norm_h = max(0.01, min(1 - norm_y, norm_h))
+                # Update config
+                detector.zone_filter.config["screen_region"]["x"] = norm_x
+                detector.zone_filter.config["screen_region"]["y"] = norm_y
+                detector.zone_filter.config["screen_region"]["width"] = norm_w
+                detector.zone_filter.config["screen_region"]["height"] = norm_h
+                save_zone_config()
+                # Update sliders
+                cv2.setTrackbarPos("Zone X %", "Pose Detection + Segmentation", int(norm_x * 100))
+                cv2.setTrackbarPos("Zone Y %", "Pose Detection + Segmentation", int(norm_y * 100))
+                cv2.setTrackbarPos("Zone W %", "Pose Detection + Segmentation", int(norm_w * 100))
+                cv2.setTrackbarPos("Zone H %", "Pose Detection + Segmentation", int(norm_h * 100))
+                print(f"Zone set: x={norm_x:.2f} y={norm_y:.2f} w={norm_w:.2f} h={norm_h:.2f}")
+                zone_corners = []
+            else:
+                print(f"Click 1: ({x}, {y}) - click again for opposite corner")
+    
+    cv2.setMouseCallback("Pose Detection + Segmentation", mouse_callback)
+    
+    print("Controls: sliders to adjust zone, click 2 corners to set zone, 'q' to quit.")
+    
     try:
         while cap.isOpened():
             ret, frame = cap.read()
@@ -550,8 +661,7 @@ def main():
                     )
                     detector.ndi_streamer.send_frame(uuid, stream_frame_resized)
             
-            # Reload zone config (for live slider updates)
-            detector.zone_filter.reload_if_needed()
+            # Zone config is updated directly by trackbars (no need to reload from disk)
             
             # Get segmentation masks for overlay
             seg_masks = detector.last_segmentation_masks
@@ -601,12 +711,50 @@ def main():
                             y = int(landmark.y * h)
                             cv2.circle(annotated, (x, y), 6, color, -1)
                     
-                    # Draw UUID label
+                    # Calculate average Z (depth) for this person
+                    z_values = [lm.z for lm in landmarks if hasattr(lm, 'z')]
+                    avg_z = sum(z_values) / len(z_values) if z_values else 0.0
+                    z_cfg = detector.zone_filter.config["z_range"]
+                    in_z = z_cfg["min"] <= avg_z <= z_cfg["max"]
+                    
+                    # Draw UUID label with Z value
                     if len(landmarks) > 0 and hasattr(landmarks[0], 'x'):
                         nose = landmarks[0]
-                        uuid_text = f"{p['uuid'][:8]} {'IN' if p['in_zone'] else 'OUT'}"
-                        cv2.putText(annotated, uuid_text, (int(nose.x * w), int(nose.y * h) - 20),
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                        zone_status = "IN" if p['in_zone'] else "OUT"
+                        z_status = "" if in_z else " Z!"
+                        uuid_text = f"{p['uuid'][:8]} {zone_status}{z_status}"
+                        label_x = int(nose.x * w)
+                        label_y = int(nose.y * h) - 40
+                        
+                        # Background box for readability
+                        (tw, th), _ = cv2.getTextSize(uuid_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+                        cv2.rectangle(annotated, (label_x - 5, label_y - th - 5), 
+                                     (label_x + tw + 5, label_y + 5), (0, 0, 0), -1)
+                        cv2.putText(annotated, uuid_text, (label_x, label_y),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+                        
+                        # Z depth bar below label
+                        bar_y = label_y + 10
+                        bar_w = 80
+                        bar_h = 8
+                        # Map Z from range to bar position (-1 to 1 -> 0 to bar_w)
+                        z_norm = (avg_z + 1.0) / 2.0  # -1 to 1 -> 0 to 1
+                        z_pos = max(0, min(bar_w, int(z_norm * bar_w)))
+                        z_min_pos = max(0, int((z_cfg["min"] + 1.0) / 2.0 * bar_w))
+                        z_max_pos = min(bar_w, int((z_cfg["max"] + 1.0) / 2.0 * bar_w))
+                        
+                        # Draw Z bar background
+                        cv2.rectangle(annotated, (label_x, bar_y), (label_x + bar_w, bar_y + bar_h), (50, 50, 50), -1)
+                        # Draw Z range (valid zone)
+                        cv2.rectangle(annotated, (label_x + z_min_pos, bar_y), 
+                                     (label_x + z_max_pos, bar_y + bar_h), (0, 100, 0), -1)
+                        # Draw current Z position
+                        z_color = (0, 255, 0) if in_z else (0, 0, 255)
+                        cv2.line(annotated, (label_x + z_pos, bar_y - 2), 
+                                (label_x + z_pos, bar_y + bar_h + 2), z_color, 2)
+                        # Z value text
+                        cv2.putText(annotated, f"Z:{avg_z:.2f}", (label_x + bar_w + 5, bar_y + bar_h),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
             
             # Get hard-edged binary masks (thresholded from pose segmentation)
             hard_masks = detector.last_hard_masks
