@@ -1,9 +1,32 @@
 # Session Handoff
 
-**Last updated:** 2026-01-12 23:50
+**Last updated:** 2026-01-13 00:30
 
 > **Commands:** "spin up" / "spin down" → see `AGENT_0_SHARED.md`  
 > **Agent roster:** see `AGENT_0_SHARED.md`
+
+## Quick Start Commands
+
+```bash
+cd PyBas3
+
+# Run the full system (Vision + Scoring + Dashboard)
+uv run python orchestrator.py --dashboard
+
+# Run without dashboard
+uv run python orchestrator.py
+
+# Keep participants across restarts
+uv run python orchestrator.py --dashboard --persist
+
+# Run integration tests
+uv run python tests/test_integration.py
+
+# Run individual modules
+uv run python mediapipe/multi_person_detector.py
+uv run python scoring/pose_scorer.py
+uv run python mediapipe/live_dashboard.py
+```
 
 ## Architecture Status (as of: <!-- YYYY-MM-DD -->)
 
@@ -36,13 +59,9 @@ flowchart LR
 **Legend:** ✅ done | ⚠️ partial | ❌ not started
 
 ## What changed last session
-- 🔄 Orchestrator: Fixed NDI API (`FindCreate`, `video_frame.data`) in `ndi_streamer.py`
-- 🔄 Orchestrator: Per-participant NDI streams working (`BAS_Participant_<UUID>`)
-- 👁️ Iris: Zone UI integrated into main detector window (sliders + click-to-set corners)
-- 👁️ Iris: Z-depth visualization (shows avg Z per person, green/red in/out indicator)
-- 👁️ Iris: Segmentation mask tuned for tighter body contour fit
-- 👁️ Iris: Added `--persist` flag (default clears participants/scores on startup)
-- 📝 Removed all git commit instructions from rules/docs
+- 🔄 Orchestrator: Created `orchestrator.py` launcher script
+- 🔄 Orchestrator: Simplified `live_dashboard.py` (shows thumbnails + scores, removed redundant zone config window)
+- 📝 Added Quick Start Commands section to SESSION.md
 
 ## Current state
 - **👁️ Iris**: MediaPipe detection + pHash + shared memory + per-participant NDI streams ✅; zone UI with sliders + click-to-set ✅
@@ -71,6 +90,7 @@ flowchart LR
 - ✅ 🔄 Integration tests (`tests/test_integration.py`) - all 4 passing
 - ✅ 👁️ Per-participant NDI streams (`BAS_Participant_<UUID>`)
 - ✅ 👁️ Zone UI: sliders + click-to-set corners + Z-depth visualization
+- ✅ 🔄 Launcher script (`orchestrator.py`) - starts Vision + Scoring + optional Dashboard
 
 ## Blockers
 - <!-- delete when resolved -->
