@@ -15,7 +15,7 @@ from typing import List, Tuple
 
 # Shared memory configuration
 SHARED_MEMORY_BUFFER_NAME = 'bas_pose_data'
-MAX_PARTICIPANTS = 3
+MAX_PARTICIPANTS = 10
 MEDIAPIPE_LANDMARKS = 33  # MediaPipe Pose has 33 landmarks
 
 # Binary format constants (bytes)

@@ -22,7 +22,7 @@ class NDIStreamer:
     """Manages per-participant NDI video streams."""
     
     def __init__(self):
-        self.streams: Dict[str, dict] = {}  # uuid -> {sender, video_frame, ...}
+        self.streams: Dict[str, dict] = {}  # uuid -> {sender, width, height}
         self._initialized = False
         
         if not NDI_AVAILABLE:
@@ -40,15 +40,6 @@ class NDIStreamer:
     def create_stream(self, uuid: str, width: int, height: int, fps: float = 30.0) -> bool:
         """
         Create a dedicated NDI stream for a participant.
-        
-        Args:
-            uuid: Participant UUID
-            width: Video width
-            height: Video height
-            fps: Frame rate
-        
-        Returns:
-            True if stream created successfully
         """
         if not self._initialized:
             return False
@@ -61,31 +52,19 @@ class NDIStreamer:
         # Create dedicated sender for this participant
         send_create = ndi.SendCreate()
         send_create.ndi_name = stream_name
-        send_create.clock_video = False  # Don't block on send
+        send_create.clock_video = False
         
         sender = ndi.send_create(send_create)
         if not sender:
             print(f"Failed to create NDI sender for {stream_name}")
             return False
         
-        # Create video frame descriptor
-        video_frame = ndi.VideoFrameV2()
-        video_frame.xres = width
-        video_frame.yres = height
-        video_frame.FourCC = ndi.FOURCC_VIDEO_TYPE_BGRA
-        video_frame.frame_rate_N = int(fps * 1000)
-        video_frame.frame_rate_D = 1000
-        video_frame.picture_aspect_ratio = width / height
-        
-        # Allocate buffer for BGRA frame
-        video_frame.data = np.zeros((height, width, 4), dtype=np.uint8)
-        
         self.streams[uuid] = {
             "name": stream_name,
             "sender": sender,
-            "video_frame": video_frame,
             "width": width,
-            "height": height
+            "height": height,
+            "fps": fps
         }
         
         print(f"Created NDI stream: {stream_name} ({width}x{height})")
@@ -94,13 +73,6 @@ class NDIStreamer:
     def send_frame(self, uuid: str, frame_bgra: np.ndarray) -> bool:
         """
         Send a frame to a participant's NDI stream.
-        
-        Args:
-            uuid: Participant UUID
-            frame_bgra: Frame in BGRA format (height, width, 4)
-        
-        Returns:
-            True if frame sent successfully
         """
         if not self._initialized:
             return False
@@ -110,23 +82,40 @@ class NDIStreamer:
         
         stream = self.streams[uuid]
         sender = stream["sender"]
-        video_frame = stream["video_frame"]
+        width = stream["width"]
+        height = stream["height"]
         
         # Ensure frame matches stream dimensions
         h, w = frame_bgra.shape[:2]
-        if h != stream["height"] or w != stream["width"]:
-            frame_bgra = cv2.resize(frame_bgra, (stream["width"], stream["height"]))
+        if h != height or w != width:
+            frame_bgra = cv2.resize(frame_bgra, (width, height))
         
-        # Ensure BGRA format (4 channels)
+        # Convert to BGRX (ignore alpha, use X=255)
         if len(frame_bgra.shape) == 2:
-            frame_bgra = cv2.cvtColor(frame_bgra, cv2.COLOR_GRAY2BGRA)
+            frame_bgrx = cv2.cvtColor(frame_bgra, cv2.COLOR_GRAY2BGRA)
         elif frame_bgra.shape[2] == 3:
-            frame_bgra = cv2.cvtColor(frame_bgra, cv2.COLOR_BGR2BGRA)
+            frame_bgrx = cv2.cvtColor(frame_bgra, cv2.COLOR_BGR2BGRA)
+        else:
+            frame_bgrx = frame_bgra.copy()
         
-        # Copy frame data to NDI buffer
-        np.copyto(video_frame.data, frame_bgra)
+        # Set alpha to 255
+        frame_bgrx[:, :, 3] = 255
         
-        # Send frame through this participant's sender
+        # Ensure contiguous C-order array
+        frame_bgrx = np.ascontiguousarray(frame_bgrx, dtype=np.uint8)
+        
+        # Create fresh video frame each time
+        video_frame = ndi.VideoFrameV2()
+        video_frame.xres = width
+        video_frame.yres = height
+        video_frame.FourCC = ndi.FOURCC_VIDEO_TYPE_BGRX
+        video_frame.frame_rate_N = 30000
+        video_frame.frame_rate_D = 1000
+        video_frame.picture_aspect_ratio = width / height
+        video_frame.line_stride_in_bytes = width * 4
+        video_frame.data = frame_bgrx
+        
+        # Send frame
         ndi.send_send_video_v2(sender, video_frame)
         return True
     

@@ -348,9 +348,13 @@ def main():
     parser.add_argument("--target-fps", type=float, default=12.0, help="Extract frames at this fps")
     parser.add_argument("--model", type=str, default="depth-anything/Depth-Anything-V2-Small-hf")
     parser.add_argument("--device", type=str, default="mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu"))
-    parser.add_argument("--blend-modes", type=str, nargs="+", default=["lighten", "add", "lighten_add"],
-                        choices=BLEND_MODES)
+    parser.add_argument("--blend-modes", type=str, nargs="+", default=[],
+                        choices=BLEND_MODES, help="Chronophotography blend modes (disabled by default)")
     parser.add_argument("--alpha", type=float, default=0.5)
+    parser.add_argument("--effects", type=str, nargs="+", 
+                        default=["rainbow_trail", "microres", "lowres", "dithered", "depth", "red_overlay", "atkinson"],
+                        choices=["rainbow_trail", "microres", "lowres", "dithered", "depth", "red_overlay", "atkinson", "extract", "bayer", "depth_banding"],
+                        help="Which effects to generate")
     parser.add_argument("--output-dir", type=str, default=None)
     parser.add_argument("--force-greenscreen", action="store_true", help="Force green screen mode")
     parser.add_argument("--force-no-greenscreen", action="store_true", help="Force regular video mode")
@@ -481,182 +485,192 @@ def main():
         original_frames.append(frame)
     
     # Parallel dithering
-    log("DITHER", "Creating dithered frames (parallel)...")
-    dithered_dir = os.path.join(args.output_dir, "dithered")
-    atkinson_dir = os.path.join(args.output_dir, "atkinson")
-    bayer_dir = os.path.join(args.output_dir, "bayer")
-    os.makedirs(dithered_dir, exist_ok=True)
-    os.makedirs(atkinson_dir, exist_ok=True)
-    os.makedirs(bayer_dir, exist_ok=True)
-    
     dithered_images = []
-    with ThreadPoolExecutor(max_workers=args.workers) as executor:
-        # Floyd-Steinberg
-        floyd_args = [(i, p, dithered_dir, "floyd") for i, p in enumerate(frame_paths)]
-        floyd_results = list(tqdm(executor.map(process_dither_frame, floyd_args), 
-                                  total=len(floyd_args), desc="Dithering (Floyd-Steinberg)", unit="frame"))
-        dithered_images = [r for r in floyd_results if r is not None]
-        
-        # Atkinson
-        atk_args = [(i, p, atkinson_dir, "atkinson") for i, p in enumerate(frame_paths)]
-        list(tqdm(executor.map(process_dither_frame, atk_args), 
-                  total=len(atk_args), desc="Dithering (Atkinson)", unit="frame"))
-        
-        # Bayer
-        bayer_args = [(i, p, bayer_dir, "bayer") for i, p in enumerate(frame_paths)]
-        list(tqdm(executor.map(process_dither_frame, bayer_args), 
-                  total=len(bayer_args), desc="Dithering (Bayer)", unit="frame"))
+    if "dithered" in args.effects or "red_overlay" in args.effects:
+        log("DITHER", "Creating dithered frames (parallel)...")
+        dithered_dir = os.path.join(args.output_dir, "dithered")
+        os.makedirs(dithered_dir, exist_ok=True)
+        with ThreadPoolExecutor(max_workers=args.workers) as executor:
+            floyd_args = [(i, p, dithered_dir, "floyd") for i, p in enumerate(frame_paths)]
+            floyd_results = list(tqdm(executor.map(process_dither_frame, floyd_args), 
+                                      total=len(floyd_args), desc="Dithering (Floyd-Steinberg)", unit="frame"))
+            dithered_images = [r for r in floyd_results if r is not None]
+    
+    if "atkinson" in args.effects:
+        log("DITHER", "Creating Atkinson dithered frames...")
+        atkinson_dir = os.path.join(args.output_dir, "atkinson")
+        os.makedirs(atkinson_dir, exist_ok=True)
+        with ThreadPoolExecutor(max_workers=args.workers) as executor:
+            atk_args = [(i, p, atkinson_dir, "atkinson") for i, p in enumerate(frame_paths)]
+            list(tqdm(executor.map(process_dither_frame, atk_args), 
+                      total=len(atk_args), desc="Dithering (Atkinson)", unit="frame"))
+    
+    if "bayer" in args.effects:
+        log("DITHER", "Creating Bayer dithered frames...")
+        bayer_dir = os.path.join(args.output_dir, "bayer")
+        os.makedirs(bayer_dir, exist_ok=True)
+        with ThreadPoolExecutor(max_workers=args.workers) as executor:
+            bayer_args = [(i, p, bayer_dir, "bayer") for i, p in enumerate(frame_paths)]
+            list(tqdm(executor.map(process_dither_frame, bayer_args), 
+                      total=len(bayer_args), desc="Dithering (Bayer)", unit="frame"))
     
     # Parallel pixelated frames with adaptive threshold
-    log("PIXEL", "Creating pixelated frames (parallel)...")
-    extract_dir = os.path.join(args.output_dir, "extract")
-    lowres_dir = os.path.join(args.output_dir, "lowres")
-    microres_dir = os.path.join(args.output_dir, "microres")
-    os.makedirs(extract_dir, exist_ok=True)
-    os.makedirs(lowres_dir, exist_ok=True)
-    os.makedirs(microres_dir, exist_ok=True)
+    if "extract" in args.effects:
+        log("PIXEL", "Creating extract frames...")
+        extract_dir = os.path.join(args.output_dir, "extract")
+        os.makedirs(extract_dir, exist_ok=True)
+        with ThreadPoolExecutor(max_workers=args.workers) as executor:
+            extract_args = [(i, p, extract_dir, 8, frame_stats) for i, p in enumerate(frame_paths)]
+            list(tqdm(executor.map(process_pixel_frame, extract_args), 
+                      total=len(extract_args), desc="Pixelation (Extract)", unit="frame"))
     
-    with ThreadPoolExecutor(max_workers=args.workers) as executor:
-        # Extract (8x downscale)
-        extract_args = [(i, p, extract_dir, 8, frame_stats) for i, p in enumerate(frame_paths)]
-        list(tqdm(executor.map(process_pixel_frame, extract_args), 
-                  total=len(extract_args), desc="Pixelation (Extract)", unit="frame"))
-        
-        # Lowres (16x downscale)
-        lowres_args = [(i, p, lowres_dir, 16, frame_stats) for i, p in enumerate(frame_paths)]
-        list(tqdm(executor.map(process_pixel_frame, lowres_args), 
-                  total=len(lowres_args), desc="Pixelation (Lowres)", unit="frame"))
-        
-        # Microres (24x downscale)
-        micro_args = [(i, p, microres_dir, 24, frame_stats) for i, p in enumerate(frame_paths)]
-        list(tqdm(executor.map(process_pixel_frame, micro_args), 
-                  total=len(micro_args), desc="Pixelation (Microres)", unit="frame"))
+    if "lowres" in args.effects:
+        log("PIXEL", "Creating lowres frames...")
+        lowres_dir = os.path.join(args.output_dir, "lowres")
+        os.makedirs(lowres_dir, exist_ok=True)
+        with ThreadPoolExecutor(max_workers=args.workers) as executor:
+            lowres_args = [(i, p, lowres_dir, 16, frame_stats) for i, p in enumerate(frame_paths)]
+            list(tqdm(executor.map(process_pixel_frame, lowres_args), 
+                      total=len(lowres_args), desc="Pixelation (Lowres)", unit="frame"))
+    
+    if "microres" in args.effects:
+        log("PIXEL", "Creating microres frames...")
+        microres_dir = os.path.join(args.output_dir, "microres")
+        os.makedirs(microres_dir, exist_ok=True)
+        with ThreadPoolExecutor(max_workers=args.workers) as executor:
+            micro_args = [(i, p, microres_dir, 24, frame_stats) for i, p in enumerate(frame_paths)]
+            list(tqdm(executor.map(process_pixel_frame, micro_args), 
+                      total=len(micro_args), desc="Pixelation (Microres)", unit="frame"))
     
     # Red overlay frames
-    log("EFFECT", "Creating red overlay frames...")
-    red_overlay_dir = os.path.join(args.output_dir, "red_overlay")
-    os.makedirs(red_overlay_dir, exist_ok=True)
-    for idx, frame_path in enumerate(tqdm(frame_paths, desc="Red overlay", unit="frame")):
-        frame = cv2.imread(frame_path)
-        if frame is None:
-            continue
-        h, w = frame.shape[:2]
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        dark_base = np.clip(gray.astype(np.float32) * 0.3, 0, 255).astype(np.uint8)
-        
-        if idx < len(dithered_images):
-            dith = dithered_images[idx]
-            if dith.shape != (h, w):
-                dith = cv2.resize(dith, (w, h))
+    if "red_overlay" in args.effects:
+        log("EFFECT", "Creating red overlay frames...")
+        red_overlay_dir = os.path.join(args.output_dir, "red_overlay")
+        os.makedirs(red_overlay_dir, exist_ok=True)
+        for idx, frame_path in enumerate(tqdm(frame_paths, desc="Red overlay", unit="frame")):
+            frame = cv2.imread(frame_path)
+            if frame is None:
+                continue
+            h, w = frame.shape[:2]
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            dark_base = np.clip(gray.astype(np.float32) * 0.3, 0, 255).astype(np.uint8)
             
-            result = np.zeros((h, w, 3), dtype=np.uint8)
-            result[:, :, 0] = np.clip(dark_base * 0.4, 0, 60).astype(np.uint8)
-            result[:, :, 1] = np.clip(dark_base * 0.2, 0, 40).astype(np.uint8)
-            result[:, :, 2] = np.clip(dark_base * 0.3, 0, 50).astype(np.uint8)
-            
-            dith_mask = dith > 127
-            result[:, :, 2] = np.where(dith_mask, 255, result[:, :, 2])
-            result[:, :, 1] = np.where(dith_mask, 80, result[:, :, 1])
-            result[:, :, 0] = np.where(dith_mask, 20, result[:, :, 0])
-            
-            Image.fromarray(cv2.cvtColor(result, cv2.COLOR_BGR2RGB)).save(
-                os.path.join(red_overlay_dir, f"frame_{idx:04d}.png"))
-    log("EFFECT", "Red overlay done")
+            if idx < len(dithered_images):
+                dith = dithered_images[idx]
+                if dith.shape != (h, w):
+                    dith = cv2.resize(dith, (w, h))
+                
+                result = np.zeros((h, w, 3), dtype=np.uint8)
+                result[:, :, 0] = np.clip(dark_base * 0.4, 0, 60).astype(np.uint8)
+                result[:, :, 1] = np.clip(dark_base * 0.2, 0, 40).astype(np.uint8)
+                result[:, :, 2] = np.clip(dark_base * 0.3, 0, 50).astype(np.uint8)
+                
+                dith_mask = dith > 127
+                result[:, :, 2] = np.where(dith_mask, 255, result[:, :, 2])
+                result[:, :, 1] = np.where(dith_mask, 80, result[:, :, 1])
+                result[:, :, 0] = np.where(dith_mask, 20, result[:, :, 0])
+                
+                Image.fromarray(cv2.cvtColor(result, cv2.COLOR_BGR2RGB)).save(
+                    os.path.join(red_overlay_dir, f"frame_{idx:04d}.png"))
+        log("EFFECT", "Red overlay done")
     
     # Rainbow trail
-    log("EFFECT", "Creating rainbow trail frames...")
-    rainbow_dir = os.path.join(args.output_dir, "rainbow_trail")
-    os.makedirs(rainbow_dir, exist_ok=True)
-    
-    for idx, frame_path in enumerate(tqdm(frame_paths, desc="Rainbow trail", unit="frame")):
-        frame = cv2.imread(frame_path)
-        if frame is None:
-            continue
-        h, w = frame.shape[:2]
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        result = np.zeros((h, w, 3), dtype=np.float32)
+    if "rainbow_trail" in args.effects:
+        log("EFFECT", "Creating rainbow trail frames...")
+        rainbow_dir = os.path.join(args.output_dir, "rainbow_trail")
+        os.makedirs(rainbow_dir, exist_ok=True)
         
-        trail_frames = max(0, idx - 8)
-        for t_idx in range(trail_frames, idx + 1):
-            t_frame = cv2.imread(frame_paths[t_idx])
-            if t_frame is None:
+        for idx, frame_path in enumerate(tqdm(frame_paths, desc="Rainbow trail", unit="frame")):
+            frame = cv2.imread(frame_path)
+            if frame is None:
                 continue
-            t_gray = cv2.cvtColor(t_frame, cv2.COLOR_BGR2GRAY).astype(np.float32)
-            if t_gray.shape != (h, w):
-                t_gray = cv2.resize(t_gray, (w, h))
+            h, w = frame.shape[:2]
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            result = np.zeros((h, w, 3), dtype=np.float32)
             
-            time_offset = (idx - t_idx) / 8.0
-            hue = (time_offset * 0.7) % 1.0
+            trail_frames = max(0, idx - 8)
+            for t_idx in range(trail_frames, idx + 1):
+                t_frame = cv2.imread(frame_paths[t_idx])
+                if t_frame is None:
+                    continue
+                t_gray = cv2.cvtColor(t_frame, cv2.COLOR_BGR2GRAY).astype(np.float32)
+                if t_gray.shape != (h, w):
+                    t_gray = cv2.resize(t_gray, (w, h))
+                
+                time_offset = (idx - t_idx) / 8.0
+                hue = (time_offset * 0.7) % 1.0
+                
+                if hue < 1/6:
+                    r, g, b = 1.0, hue * 6, 0
+                elif hue < 2/6:
+                    r, g, b = 1 - (hue - 1/6) * 6, 1.0, 0
+                elif hue < 3/6:
+                    r, g, b = 0, 1.0, (hue - 2/6) * 6
+                elif hue < 4/6:
+                    r, g, b = 0, 1 - (hue - 3/6) * 6, 1.0
+                elif hue < 5/6:
+                    r, g, b = (hue - 4/6) * 6, 0, 1.0
+                else:
+                    r, g, b = 1.0, 0, 1 - (hue - 5/6) * 6
+                
+                fade = 1.0 - (time_offset * 0.7)
+                intensity = t_gray / 255.0 * fade
+                blurred = cv2.GaussianBlur(intensity, (15, 15), 0)
+                result[:, :, 2] += blurred * r * 180
+                result[:, :, 1] += blurred * g * 180
+                result[:, :, 0] += blurred * b * 180
             
-            if hue < 1/6:
-                r, g, b = 1.0, hue * 6, 0
-            elif hue < 2/6:
-                r, g, b = 1 - (hue - 1/6) * 6, 1.0, 0
-            elif hue < 3/6:
-                r, g, b = 0, 1.0, (hue - 2/6) * 6
-            elif hue < 4/6:
-                r, g, b = 0, 1 - (hue - 3/6) * 6, 1.0
-            elif hue < 5/6:
-                r, g, b = (hue - 4/6) * 6, 0, 1.0
-            else:
-                r, g, b = 1.0, 0, 1 - (hue - 5/6) * 6
+            current_bright = gray.astype(np.float32) / 255.0
+            bright_mask = current_bright > 0.6
+            result[:, :, 0] = np.where(bright_mask, np.clip(result[:, :, 0] + current_bright * 200, 0, 255), result[:, :, 0])
+            result[:, :, 1] = np.where(bright_mask, np.clip(result[:, :, 1] + current_bright * 200, 0, 255), result[:, :, 1])
+            result[:, :, 2] = np.where(bright_mask, np.clip(result[:, :, 2] + current_bright * 200, 0, 255), result[:, :, 2])
             
-            fade = 1.0 - (time_offset * 0.7)
-            intensity = t_gray / 255.0 * fade
-            blurred = cv2.GaussianBlur(intensity, (15, 15), 0)
-            result[:, :, 2] += blurred * r * 180
-            result[:, :, 1] += blurred * g * 180
-            result[:, :, 0] += blurred * b * 180
-        
-        current_bright = gray.astype(np.float32) / 255.0
-        bright_mask = current_bright > 0.6
-        result[:, :, 0] = np.where(bright_mask, np.clip(result[:, :, 0] + current_bright * 200, 0, 255), result[:, :, 0])
-        result[:, :, 1] = np.where(bright_mask, np.clip(result[:, :, 1] + current_bright * 200, 0, 255), result[:, :, 1])
-        result[:, :, 2] = np.where(bright_mask, np.clip(result[:, :, 2] + current_bright * 200, 0, 255), result[:, :, 2])
-        
-        noise = np.random.normal(0, 8, (h, w, 3))
-        result = np.clip(result + noise, 0, 255).astype(np.uint8)
-        Image.fromarray(cv2.cvtColor(result, cv2.COLOR_BGR2RGB)).save(
-            os.path.join(rainbow_dir, f"frame_{idx:04d}.png"))
-    log("EFFECT", "Rainbow trail done")
+            noise = np.random.normal(0, 8, (h, w, 3))
+            result = np.clip(result + noise, 0, 255).astype(np.uint8)
+            Image.fromarray(cv2.cvtColor(result, cv2.COLOR_BGR2RGB)).save(
+                os.path.join(rainbow_dir, f"frame_{idx:04d}.png"))
+        log("EFFECT", "Rainbow trail done")
     
     # Depth banding
-    log("EFFECT", "Creating depth banding frames...")
-    banding_dir = os.path.join(args.output_dir, "depth_banding")
-    os.makedirs(banding_dir, exist_ok=True)
+    if "depth_banding" in args.effects:
+        log("EFFECT", "Creating depth banding frames...")
+        banding_dir = os.path.join(args.output_dir, "depth_banding")
+        os.makedirs(banding_dir, exist_ok=True)
+        
+        for idx, frame_path in enumerate(tqdm(frame_paths, desc="Depth banding", unit="frame")):
+            frame = cv2.imread(frame_path)
+            if frame is None:
+                continue
+            h, w = frame.shape[:2]
+            
+            if idx < len(depth_images):
+                depth = depth_images[idx]
+                if depth.shape != (h, w):
+                    depth = cv2.resize(depth, (w, h))
+            else:
+                depth = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            
+            result = np.zeros((h, w), dtype=np.uint8)
+            
+            for y in range(h):
+                for x in range(w):
+                    d = depth[y, x]
+                    if d < 10:
+                        continue
+                    line_spacing = max(2, int(20 - d / 15))
+                    wave = int(np.sin(y * 0.1 + d * 0.05) * 3)
+                    if (y + wave) % line_spacing < 2:
+                        result[y, x] = 255
+            
+            noise_mask = np.random.random((h, w)) < (depth.astype(np.float32) / 255.0 * 0.1)
+            result = np.where(noise_mask, 255, result).astype(np.uint8)
+            Image.fromarray(result, mode='L').save(os.path.join(banding_dir, f"frame_{idx:04d}.png"))
+        log("EFFECT", "Depth banding done")
     
-    for idx, frame_path in enumerate(tqdm(frame_paths, desc="Depth banding", unit="frame")):
-        frame = cv2.imread(frame_path)
-        if frame is None:
-            continue
-        h, w = frame.shape[:2]
-        
-        if idx < len(depth_images):
-            depth = depth_images[idx]
-            if depth.shape != (h, w):
-                depth = cv2.resize(depth, (w, h))
-        else:
-            depth = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        
-        result = np.zeros((h, w), dtype=np.uint8)
-        
-        for y in range(h):
-            for x in range(w):
-                d = depth[y, x]
-                if d < 10:
-                    continue
-                line_spacing = max(2, int(20 - d / 15))
-                wave = int(np.sin(y * 0.1 + d * 0.05) * 3)
-                if (y + wave) % line_spacing < 2:
-                    result[y, x] = 255
-        
-        noise_mask = np.random.random((h, w)) < (depth.astype(np.float32) / 255.0 * 0.1)
-        result = np.where(noise_mask, 255, result).astype(np.uint8)
-        Image.fromarray(result, mode='L').save(os.path.join(banding_dir, f"frame_{idx:04d}.png"))
-    log("EFFECT", "Depth banding done")
-    
-    # Chronophotography composites
-    log("CHRONO", "Creating blend composites...")
+    # Chronophotography composites (only if blend modes specified)
+    if args.blend_modes:
+        log("CHRONO", "Creating blend composites...")
     for mode in args.blend_modes:
         for idx in tqdm(range(len(resized_depths)), desc=f"Blend ({mode})", unit="frame"):
             frames_so_far = resized_depths[:idx + 1]
@@ -690,8 +704,18 @@ def main():
     videos_dir = os.path.join(args.output_dir, "videos")
     os.makedirs(videos_dir, exist_ok=True)
     
-    pass_folders = ["frames", "depth_maps", "dithered", "atkinson", "bayer", "extract", 
-                    "lowres", "microres", "red_overlay", "rainbow_trail", "depth_banding"]
+    # Build list of folders that were actually generated
+    pass_folders = ["frames"]
+    if "depth" in args.effects:
+        pass_folders.append("depth_maps")
+    effect_to_folder = {
+        "dithered": "dithered", "atkinson": "atkinson", "bayer": "bayer",
+        "extract": "extract", "lowres": "lowres", "microres": "microres",
+        "red_overlay": "red_overlay", "rainbow_trail": "rainbow_trail", "depth_banding": "depth_banding"
+    }
+    for effect, folder in effect_to_folder.items():
+        if effect in args.effects:
+            pass_folders.append(folder)
     pass_folders.extend(args.blend_modes)
     
     for folder in tqdm(pass_folders, desc="Creating videos", unit="video"):

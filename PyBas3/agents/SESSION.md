@@ -1,6 +1,6 @@
 # Session Handoff
 
-**Last updated:** 2026-01-13 00:30
+**Last updated:** 2026-01-14 15:15
 
 > **Commands:** "spin up" / "spin down" → see `AGENT_0_SHARED.md`  
 > **Agent roster:** see `AGENT_0_SHARED.md`
@@ -50,7 +50,7 @@ flowchart LR
     end
     
     subgraph TouchDesigner
-        TDN["TD Network ⚠️"]
+        TDN["TD Network ✅"]
         NDI --> TDN
         JSON --> TDN
     end
@@ -59,19 +59,25 @@ flowchart LR
 **Legend:** ✅ done | ⚠️ partial | ❌ not started
 
 ## What changed last session
-- 🔄 Orchestrator: Created `orchestrator.py` launcher script
-- 🔄 Orchestrator: Simplified `live_dashboard.py` (shows thumbnails + scores, removed redundant zone config window)
-- 📝 Added Quick Start Commands section to SESSION.md
+- 🎨 TouchDesigner integration complete:
+  - Created `td_execute.py` - Execute DAT script for live file sync
+  - Fixed NDI streaming (BGRX format, proper line stride)
+  - Installed TouchDesigner MCP server for direct TD control from Cursor
+  - Created NDI In TOPs receiving participant video streams
+  - Score data accessible via `parent().fetch('pybas3_scores')`
+- 📦 Added `ndi-python` dependency to pyproject.toml
 
 ## Current state
 - **👁️ Iris**: MediaPipe detection + pHash + shared memory + per-participant NDI streams ✅; zone UI with sliders + click-to-set ✅
 - **🎯 Judge**: Scoring module complete (reader + scorer + JSON writer) ✅
-- **🎨 Canvas**: TD helper scripts complete; needs GUI integration in TouchDesigner
+- **🎨 Canvas**: TD integration complete - NDI video streams + score data flowing to TouchDesigner ✅
 
 ## Tasks
 
 ### Backlog
-- 🎨 TouchDesigner GUI integration (wire up helper scripts)
+- 🎨 TD visual effects (compositing, overlays, score display)
+- 🎨 TD auto-update NDI sources when participants change
+- 📹 Recording module (capture participant streams)
 
 ### In Progress
 - <!-- none -->
@@ -91,6 +97,10 @@ flowchart LR
 - ✅ 👁️ Per-participant NDI streams (`BAS_Participant_<UUID>`)
 - ✅ 👁️ Zone UI: sliders + click-to-set corners + Z-depth visualization
 - ✅ 🔄 Launcher script (`orchestrator.py`) - starts Vision + Scoring + optional Dashboard
+- ✅ 🎨 TD: Execute DAT integration script (`td_scripts/td_execute.py`)
+- ✅ 🎨 TD: NDI video streams working (BGRX format fix)
+- ✅ 🎨 TD: TouchDesigner MCP server installed for Cursor control
+- ✅ 🎨 TD: Score data + NDI streams flowing to TouchDesigner
 
 ## Blockers
 - <!-- delete when resolved -->
