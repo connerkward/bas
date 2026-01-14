@@ -1,0 +1,5 @@
+{
+  "dependencies": {
+    "touchdesigner-mcp-server": "^1.4.3"
+  }
+}

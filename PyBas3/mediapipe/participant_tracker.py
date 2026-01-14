@@ -25,13 +25,17 @@ class ParticipantTracker:
         db_path: str = "participants_db.json",
         hash_size: int = 8,
         threshold: int = 10,
-        max_participants: int = 3
+        max_participants: int = 3,
+        hash_history_size: int = 3,
+        face_threshold_floor: int = 40
     ):
         self.db_path = db_path
         self.hash_size = hash_size
         self.threshold = threshold  # Hamming distance threshold (lower = more lenient matching)
         self.max_participants = max_participants
-        self.participants: Dict[str, Dict] = {}  # uuid -> {"phash": array, "last_seen": timestamp}
+        self.hash_history_size = max(1, hash_history_size)
+        self.face_threshold_floor = face_threshold_floor
+        self.participants: Dict[str, Dict] = {}  # uuid -> {"phash": array, "phash_history": list, "last_seen": timestamp}
         self._load_db()
     
     def _load_db(self):
@@ -44,14 +48,31 @@ class ParticipantTracker:
                     for uuid, value in data.items():
                         if isinstance(value, str):
                             # Old format: just hash string
+                            phash = np.array(json.loads(value), dtype=np.uint8)
                             self.participants[uuid] = {
-                                "phash": np.array(json.loads(value)),
+                                "phash": phash,
+                                "phash_history": [phash] if phash.size else [],
                                 "last_seen": None  # Unknown timestamp
                             }
                         elif isinstance(value, dict):
                             # New format: dict with phash and last_seen
+                            phash = np.array(json.loads(value.get("phash", "[]")), dtype=np.uint8)
+                            raw_history = value.get("phash_history", [])
+                            history: List[np.ndarray] = []
+                            if isinstance(raw_history, list):
+                                for item in raw_history:
+                                    if isinstance(item, str):
+                                        try:
+                                            history.append(np.array(json.loads(item), dtype=np.uint8))
+                                        except (json.JSONDecodeError, ValueError):
+                                            continue
+                                    else:
+                                        history.append(np.array(item, dtype=np.uint8))
+                            if not history and phash.size:
+                                history = [phash]
                             self.participants[uuid] = {
-                                "phash": np.array(json.loads(value.get("phash", "[]"))),
+                                "phash": phash,
+                                "phash_history": history,
                                 "last_seen": value.get("last_seen")
                             }
             except (json.JSONDecodeError, KeyError, ValueError) as e:
@@ -68,15 +89,37 @@ class ParticipantTracker:
         for uuid, info in self.participants.items():
             # Handle both old format (just array) and new format (dict)
             if isinstance(info, dict):
-                phash = info["phash"]
+                phash = info.get("phash", np.array([], dtype=np.uint8))
                 last_seen = info.get("last_seen")
+                history = info.get("phash_history", [])
             else:
                 # Old format: just numpy array
                 phash = info
                 last_seen = None
+                history = []
+            
+            if not isinstance(phash, np.ndarray):
+                phash = np.array(phash, dtype=np.uint8)
+            
+            history_list: List[List[int]] = []
+            for item in history:
+                if isinstance(item, np.ndarray):
+                    history_list.append(item.tolist())
+                elif isinstance(item, list):
+                    history_list.append(item)
+                elif isinstance(item, str):
+                    try:
+                        history_list.append(json.loads(item))
+                    except (json.JSONDecodeError, ValueError):
+                        continue
+            if not history_list and phash.size:
+                history_list = [phash.tolist()]
+            if len(history_list) > self.hash_history_size:
+                history_list = history_list[-self.hash_history_size:]
             
             data[uuid] = {
                 "phash": json.dumps(phash.tolist()),
+                "phash_history": history_list,
                 "last_seen": last_seen
             }
         
@@ -107,6 +150,10 @@ class ParticipantTracker:
             gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
         else:
             gray = resized
+        
+        # Normalize to reduce lighting variance
+        gray = cv2.equalizeHist(gray)
+        gray = cv2.GaussianBlur(gray, (3, 3), 0)
         
         # Compute horizontal differences
         diff = gray[:, 1:] > gray[:, :-1]
@@ -240,27 +287,48 @@ class ParticipantTracker:
         # For face-based pHash, use very lenient threshold
         # Default threshold is 10, but for face we want ~30-35 for better matching across lighting/angles/poses
         # Face crops can vary significantly between frames, so we need a high threshold
-        face_threshold = max(self.threshold * 3, 30)  # Very lenient for face matching
+        face_threshold = max(self.threshold * 3, self.face_threshold_floor)  # Very lenient for face matching
         
         for uuid, info in self.participants.items():
             # Handle both old format (string) and new format (array)
-            stored_hash = info["phash"]
+            stored_hash = info.get("phash", np.array([], dtype=np.uint8))
             if isinstance(stored_hash, str):
-                # Old format: JSON string, parse it
-                import json
                 stored_hash = np.array(json.loads(stored_hash), dtype=np.uint8)
             elif not isinstance(stored_hash, np.ndarray):
                 stored_hash = np.array(stored_hash, dtype=np.uint8)
             
-            distance = self.hamming_distance(new_hash, stored_hash)
+            history = info.get("phash_history", [])
+            if not history:
+                history = [stored_hash] if stored_hash.size else []
+            
+            best_local = float('inf')
+            for hist_hash in history:
+                if isinstance(hist_hash, str):
+                    try:
+                        hist_hash = np.array(json.loads(hist_hash), dtype=np.uint8)
+                    except (json.JSONDecodeError, ValueError):
+                        continue
+                elif not isinstance(hist_hash, np.ndarray):
+                    hist_hash = np.array(hist_hash, dtype=np.uint8)
+                if hist_hash.size == 0:
+                    continue
+                best_local = min(best_local, self.hamming_distance(new_hash, hist_hash))
+            
+            distance = best_local
             if distance < face_threshold and distance < best_distance:
                 best_distance = distance
                 best_match = uuid
         
         if best_match:
             # Update hash and timestamp for matched participant
+            existing_history = self.participants[best_match].get("phash_history", [])
+            history = list(existing_history) if isinstance(existing_history, list) else []
+            history.append(new_hash)
+            if len(history) > self.hash_history_size:
+                history = history[-self.hash_history_size:]
             self.participants[best_match] = {
                 "phash": new_hash,
+                "phash_history": history,
                 "last_seen": current_time
             }
             self._save_db()
@@ -285,6 +353,7 @@ class ParticipantTracker:
         new_uuid = str(uuid4())[:8]
         self.participants[new_uuid] = {
             "phash": new_hash,
+            "phash_history": [new_hash],
             "last_seen": current_time
         }
         self._save_db()

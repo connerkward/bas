@@ -136,11 +136,18 @@ class MultiPersonDetector:
         min_detection_confidence: float = 0.5,
         min_tracking_confidence: float = 0.5,
         enable_segmentation: bool = False,
-        num_poses: int = 3
+        num_poses: int = 3,
+        hash_history_size: int = 3,
+        face_threshold_floor: int = 40
     ):
         
         self.zone_filter = ZoneFilter(zone_config_path)
-        self.tracker = ParticipantTracker(participants_db_path, max_participants=num_poses)
+        self.tracker = ParticipantTracker(
+            participants_db_path,
+            max_participants=num_poses,
+            hash_history_size=hash_history_size,
+            face_threshold_floor=face_threshold_floor
+        )
         self.num_poses = num_poses
         
         # Download model file if needed and use MediaPipe Tasks API for multi-person detection
@@ -483,6 +490,10 @@ def main():
                         help="Loop video file (for testing)")
     parser.add_argument("--persist", "-p", action="store_true",
                         help="Keep participants_db.json from previous run (default: clear)")
+    parser.add_argument("--phash-history-size", type=int, default=3,
+                        help="Number of recent pHash values to keep per participant (default: 3)")
+    parser.add_argument("--phash-threshold-floor", type=int, default=40,
+                        help="Minimum face pHash match threshold (default: 40)")
     args = parser.parse_args()
     
     # Clear participants by default (unless --persist)
@@ -505,7 +516,11 @@ def main():
                     f.unlink()
             print("Cleared score files")
     
-    detector = MultiPersonDetector(num_poses=3)
+    detector = MultiPersonDetector(
+        num_poses=3,
+        hash_history_size=args.phash_history_size,
+        face_threshold_floor=args.phash_threshold_floor
+    )
     
     # Parse source - int for camera, string for file
     source = int(args.source) if args.source.isdigit() else args.source
