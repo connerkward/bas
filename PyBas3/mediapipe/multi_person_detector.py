@@ -190,11 +190,58 @@ class MultiPersonDetector:
         self.last_segmentation_masks = None  # Store soft masks from pose landmarker
         self.last_hard_masks = None  # Store hard-edged binary masks (thresholded at 0.5)
         
+        # Landmark smoothing to reduce MediaPipe jitter
+        self._smoothed_landmarks: Dict[str, List[Tuple[float, float, float, float]]] = {}
+        self.LANDMARK_SMOOTHING = 0.15  # 0-1: lower = more smoothing, less responsive
+        
         # Thumbnail output directory
         self.thumbnails_dir = Path(__file__).parent / "thumbnails"
         self.thumbnails_dir.mkdir(exist_ok=True)
         self.thumbnail_size = (160, 120)  # Low-res thumbnail size (width, height)
         self.saved_thumbnails = set()  # Track which UUIDs have thumbnails saved (save only once)
+    
+    def _smooth_landmarks(self, participants: List[Dict]) -> List[Dict]:
+        """Apply exponential moving average smoothing to landmark positions."""
+        smoothed = []
+        
+        for p in participants:
+            uuid = p["uuid"]
+            raw_landmarks = p["landmarks"]
+            
+            # Convert landmarks to list of tuples for smoothing
+            raw_list = []
+            for lm in raw_landmarks:
+                x = lm.x if hasattr(lm, 'x') else lm[0]
+                y = lm.y if hasattr(lm, 'y') else lm[1]
+                z = lm.z if hasattr(lm, 'z') else (lm[2] if len(lm) > 2 else 0)
+                vis = lm.visibility if hasattr(lm, 'visibility') else (lm[3] if len(lm) > 3 else 1.0)
+                raw_list.append((x, y, z, vis))
+            
+            # Get previous smoothed landmarks or initialize with current
+            prev_smoothed = self._smoothed_landmarks.get(uuid, raw_list)
+            
+            # Apply exponential smoothing: new = alpha * raw + (1-alpha) * prev
+            alpha = self.LANDMARK_SMOOTHING
+            new_smoothed = []
+            for i, (raw, prev) in enumerate(zip(raw_list, prev_smoothed)):
+                sx = alpha * raw[0] + (1 - alpha) * prev[0]
+                sy = alpha * raw[1] + (1 - alpha) * prev[1]
+                sz = alpha * raw[2] + (1 - alpha) * prev[2]
+                # Keep visibility from raw (don't smooth)
+                new_smoothed.append((sx, sy, sz, raw[3]))
+            
+            # Store smoothed landmarks for next frame
+            self._smoothed_landmarks[uuid] = new_smoothed
+            
+            # Create new participant dict with smoothed landmarks
+            smoothed.append({
+                "uuid": uuid,
+                "landmarks": new_smoothed,  # Now a list of tuples
+                "in_zone": p["in_zone"],
+                "timestamp": p["timestamp"]
+            })
+        
+        return smoothed
     
     def detect(self, frame: np.ndarray) -> List[Dict]:
         """
@@ -320,9 +367,11 @@ class MultiPersonDetector:
             })
         
         # Write poses to shared memory for Scoring module (only real UUIDs, skip temp)
+        # Apply landmark smoothing to reduce jitter
         real_participants = [p for p in detected if not p["uuid"].startswith("temp_")]
-        if real_participants:
-            self.shared_memory_writer.write_poses(real_participants)
+        smoothed_participants = self._smooth_landmarks(real_participants)
+        if smoothed_participants:
+            self.shared_memory_writer.write_poses(smoothed_participants)
         
         self.frame_counter += 1
         return detected

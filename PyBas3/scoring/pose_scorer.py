@@ -21,20 +21,31 @@ from shared_memory_reader import SharedMemoryPoseReader
 
 
 class PoseScorer:
-    """Compare live poses to reference and compute similarity scores."""
+    """Score poses based on movement with smoothing."""
     
-    # Key landmarks for scoring (upper body focus)
-    SCORING_LANDMARKS = [
+    # Key landmarks for movement detection (full body)
+    MOVEMENT_LANDMARKS = [
         0,   # nose
         11, 12,  # shoulders
         13, 14,  # elbows
         15, 16,  # wrists
         23, 24,  # hips
+        25, 26,  # knees
+        27, 28,  # ankles
     ]
     
-    def __init__(self, reference_path: str):
-        self.reference = self._load_reference(reference_path)
+    # Smoothing factor (0-1, lower = more smoothing)
+    SMOOTHING_ALPHA = 0.08
+    
+    # Movement noise threshold (ignore tiny movements below this)
+    # MediaPipe has ~1-3% jitter on stationary poses even with smoothing
+    MOVEMENT_NOISE_FLOOR = 0.02  # ~2% of frame = noise
+    
+    def __init__(self, reference_path: str = None):
+        self.reference = self._load_reference(reference_path) if reference_path else []
         self.current_frame_per_uuid: Dict[str, int] = {}
+        self.previous_poses: Dict[str, List[Tuple]] = {}  # Track previous pose per UUID
+        self.smoothed_scores: Dict[str, float] = {}  # Smoothed score per UUID
     
     def _load_reference(self, path: str) -> List[Optional[List[Tuple]]]:
         """Load reference poses from JSON."""
@@ -44,6 +55,64 @@ class PoseScorer:
         # Extract just keypoints list (or None if missing)
         return [p['keypoints'] for p in data['poses']]
     
+    def compute_movement(
+        self,
+        uuid: str,
+        current_keypoints: List[Tuple]
+    ) -> float:
+        """
+        Compute movement score based on pose change from previous frame.
+        
+        Returns raw movement score 0-100 (higher = more movement).
+        """
+        prev_keypoints = self.previous_poses.get(uuid)
+        
+        if not prev_keypoints or not current_keypoints:
+            return 0.0
+        
+        total_movement = 0.0
+        valid_count = 0
+        
+        for idx in self.MOVEMENT_LANDMARKS:
+            if idx >= len(current_keypoints) or idx >= len(prev_keypoints):
+                continue
+            
+            curr = current_keypoints[idx]
+            prev = prev_keypoints[idx]
+            
+            # Skip if visibility too low
+            if len(curr) >= 4 and curr[3] < 0.3:
+                continue
+            if len(prev) >= 4 and prev[3] < 0.3:
+                continue
+            
+            # 2D distance (x, y normalized 0-1)
+            dx = curr[0] - prev[0]
+            dy = curr[1] - prev[1]
+            movement = math.sqrt(dx * dx + dy * dy)
+            
+            # Apply noise floor - ignore tiny jitter
+            if movement < self.MOVEMENT_NOISE_FLOOR:
+                movement = 0.0
+            
+            total_movement += movement
+            valid_count += 1
+        
+        if valid_count == 0:
+            return 0.0
+        
+        avg_movement = total_movement / valid_count
+        # Scale movement to 0-100: 0.015 movement per frame = 100 score
+        raw_score = min(100.0, avg_movement * 6666)
+        return raw_score
+    
+    def get_smoothed_score(self, uuid: str, raw_score: float) -> float:
+        """Apply exponential moving average smoothing to score."""
+        prev_smooth = self.smoothed_scores.get(uuid, raw_score)
+        smoothed = prev_smooth + self.SMOOTHING_ALPHA * (raw_score - prev_smooth)
+        self.smoothed_scores[uuid] = smoothed
+        return round(smoothed, 1)
+    
     def compute_similarity(
         self,
         live_keypoints: List[Tuple],
@@ -51,9 +120,7 @@ class PoseScorer:
     ) -> float:
         """
         Compute similarity between live pose and reference pose.
-        
-        Uses weighted Euclidean distance on normalized coordinates.
-        Returns score 0-100 (higher = more similar).
+        (Legacy method, kept for compatibility)
         """
         if not ref_keypoints or not live_keypoints:
             return 0.0
@@ -61,20 +128,18 @@ class PoseScorer:
         total_dist = 0.0
         valid_count = 0
         
-        for idx in self.SCORING_LANDMARKS:
+        for idx in self.MOVEMENT_LANDMARKS[:9]:  # Upper body only
             if idx >= len(live_keypoints) or idx >= len(ref_keypoints):
                 continue
             
             live = live_keypoints[idx]
             ref = ref_keypoints[idx]
             
-            # Skip if visibility too low (threshold 0.3)
             if len(live) >= 4 and live[3] < 0.3:
                 continue
             if len(ref) >= 4 and ref[3] < 0.3:
                 continue
             
-            # 2D distance (x, y normalized 0-1)
             dx = live[0] - ref[0]
             dy = live[1] - ref[1]
             dist = math.sqrt(dx * dx + dy * dy)
@@ -86,7 +151,6 @@ class PoseScorer:
             return 0.0
         
         avg_dist = total_dist / valid_count
-        # Convert distance to score: 0 distance = 100, 0.5+ distance = 0
         score = max(0.0, min(100.0, (1.0 - avg_dist * 2) * 100))
         return round(score, 1)
     
@@ -115,18 +179,31 @@ class PoseScorer:
     
     def score_pose(self, uuid: str, keypoints: List[Tuple]) -> Dict:
         """
-        Score a participant's pose against reference.
+        Score a participant based on movement (smoothed).
         
         Returns dict ready to write as JSON.
         """
-        ref_frame, score = self.find_best_reference_frame(keypoints)
-        self.current_frame_per_uuid[uuid] = ref_frame
+        # Compute raw movement score
+        raw_movement = self.compute_movement(uuid, keypoints)
+        
+        # Apply smoothing
+        smoothed_score = self.get_smoothed_score(uuid, raw_movement)
+        
+        # Store current pose for next frame comparison
+        self.previous_poses[uuid] = keypoints.copy() if keypoints else None
+        
+        # Optional: also find reference frame for additional data
+        ref_frame = 0
+        if self.reference:
+            ref_frame, _ = self.find_best_reference_frame(keypoints)
+            self.current_frame_per_uuid[uuid] = ref_frame
         
         return {
             'uuid': uuid,
             'timestamp': time.time(),
             'reference_frame': ref_frame,
-            'score_0_to_100': score
+            'score_0_to_100': smoothed_score,
+            'raw_movement': round(raw_movement, 1)
         }
 
 
@@ -168,12 +245,13 @@ def main():
     output_dir = Path(__file__).parent / args.output_dir
     output_dir.mkdir(exist_ok=True)
     
-    if not reference_path.exists():
-        print(f"Reference not found: {reference_path}")
-        print("Run: python reference_builder.py <video_path>")
-        return
-    
-    scorer = PoseScorer(str(reference_path))
+    # Reference is now optional (movement-based scoring)
+    if reference_path.exists():
+        scorer = PoseScorer(str(reference_path))
+        print(f"Loaded reference: {reference_path}")
+    else:
+        scorer = PoseScorer(None)
+        print("No reference loaded - using movement-based scoring only")
     reader = SharedMemoryPoseReader()
     
     print("Waiting for shared memory buffer 'bas_pose_data'...")

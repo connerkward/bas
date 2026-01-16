@@ -2,3 +2,5 @@
 
 # OpenMemory - IDE/Assistant specific rules
 .cursor/rules/openmemory.mdc
+*.pyc
+.DS_Store
