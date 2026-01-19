@@ -4,7 +4,7 @@ Movement captured. Bodies tracked. Scores rendered.
 
 An experimental system for real-time pose analysis and projection mapping in dark gallery environments.
 
-![Bas](./artifacts/Screenshot%202025-12-18%20at%204.45.07%20%E2%80%8FPM.png)
+![Bas](artifacts/Screenshot%202025-12-18%20at%204.45.07%E2%80%AFPM.png)
 
 [Watch video](artifacts/basvid_v1.mov)
 
