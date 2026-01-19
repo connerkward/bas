@@ -4,7 +4,7 @@
 cd "$(dirname "$0")" || exit
 
 ffmpeg -i basvid_v1.mov \
-  -vf "fps=15,scale=-1:1226:force_original_aspect_ratio=decrease,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse" \
+  -vf "fps=15,scale=1080:1920:force_original_aspect_ratio=decrease,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse" \
   -t 10 \
   basvid_v1.gif \
   -y
