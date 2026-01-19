@@ -7,7 +7,7 @@ An experimental system for real-time pose analysis and projection mapping in dar
 <table>
 <tr>
 <td width="50%">
-<img src="artifacts/screenshot_widescreen.png" width="100%"/>
+<img src="artifacts/screenshot_portrait.png" width="100%"/>
 </td>
 <td width="50%">
 <img src="artifacts/basvid_v1.gif" width="100%"/>
