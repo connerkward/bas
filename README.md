@@ -6,7 +6,7 @@ An experimental system for real-time pose analysis and projection mapping in dar
 
 ![Bas](artifacts/Screenshot%202025-12-18%20at%204.45.07%E2%80%AFPM.png)
 
-<video src="./artifacts/basvid_v1.mov" controls width="100%"></video>
+[![Watch video](artifacts/Screenshot%202025-12-18%20at%204.45.07%E2%80%AFPM.png)](https://github.com/connerkward/bas/raw/main/artifacts/basvid_v1.mov)
 
 ---
 
