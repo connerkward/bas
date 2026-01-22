@@ -72,6 +72,7 @@ PyBas3/
 ├── pre_render/                     # Offline pipeline (migrated)
 │   ├── depth_blend_video.py
 │   └── frames_to_video.py
+```
 └── td_scripts/                     # TouchDesigner (migrated)
     └── ConnerTD/ConnerTD.toe
 ```
@@ -253,6 +254,28 @@ Packages (defined in `pyproject.toml`):
 - ndi-python>=1.1.0
 - requests>=2.31.0
 - Pillow>=10.0.0
+
+---
+
+## Pre-Render Pipeline
+
+### Depth Map Processing Issues (2026-01-21)
+
+**Problem:** Background showing high depth values when only figure/ground should be bright.
+
+**Attempted fixes:**
+1. Applied subject mask to regular videos (not just greenscreen) - caused figure clipping
+2. Used depth percentile thresholding (75th percentile) with morphological ops - created "fin" artifacts between limbs
+3. Soft depth scaling: scales background to 30% depth instead of hard thresholding
+   - Uses depth percentiles (40th-70th) for smooth transition
+   - Avoids morphological operations that create artifacts
+   - Preserves figure depth while reducing background proportionally
+
+**Current state:** Soft scaling implemented, needs testing/refinement.
+
+**TODOs:**
+- Fix green screen edge artifacts
+- Refine depth map threshold parameters
 
 ---
 

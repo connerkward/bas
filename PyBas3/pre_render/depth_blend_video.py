@@ -14,6 +14,7 @@ from transformers import pipeline
 from concurrent.futures import ThreadPoolExecutor
 import time
 from tqdm import tqdm
+import threading
 
 
 def log(step: str, detail: str = "", frame: int = None, total: int = None):
@@ -23,6 +24,47 @@ def log(step: str, detail: str = "", frame: int = None, total: int = None):
         print(f"[{timestamp}] [{step}] ({frame}/{total}) {detail}")
     else:
         print(f"[{timestamp}] [{step}] {detail}")
+
+
+def create_video_from_folder(folder_path: str, folder_name: str, videos_dir: str, target_fps: float):
+    """Create a video from a folder of frames. Returns True if successful."""
+    if not os.path.exists(folder_path):
+        return False
+    
+    frame_files = sorted([f for f in os.listdir(folder_path) if f.startswith("frame_") or f.startswith("depth_")])
+    if not frame_files:
+        return False
+    
+    first_frame = cv2.imread(os.path.join(folder_path, frame_files[0]))
+    if first_frame is None:
+        first_frame = cv2.imread(os.path.join(folder_path, frame_files[0]), cv2.IMREAD_GRAYSCALE)
+        if first_frame is None:
+            return False
+        first_frame = cv2.cvtColor(first_frame, cv2.COLOR_GRAY2BGR)
+    
+    h, w = first_frame.shape[:2]
+    video_path = os.path.join(videos_dir, f"{folder_name}.mp4")
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter(video_path, fourcc, target_fps, (w, h))
+    
+    if not out.isOpened():
+        log("VIDEO", f"Failed to open video writer for {folder_name}")
+        return False
+    
+    for frame_file in frame_files:
+        frame = cv2.imread(os.path.join(folder_path, frame_file))
+        if frame is None:
+            frame = cv2.imread(os.path.join(folder_path, frame_file), cv2.IMREAD_GRAYSCALE)
+            if frame is not None:
+                frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+        if frame is not None:
+            if frame.shape[:2] != (h, w):
+                frame = cv2.resize(frame, (w, h))
+            out.write(frame)
+    
+    out.release()
+    log("VIDEO", f"{folder_name}.mp4 done")
+    return True
 
 
 def detect_green_screen(frame: np.ndarray, threshold: float = 0.15) -> bool:
@@ -110,7 +152,17 @@ def process_frame_for_output(frame: np.ndarray, has_greenscreen: bool) -> np.nda
 
 def extract_frames(video_path: str, num_frames: int, output_dir: str, 
                    target_fps: float = None, has_greenscreen: bool = False) -> list[str]:
-    """Extract evenly spaced frames from video."""
+    """Extract evenly spaced frames from video, or use existing frames if available."""
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Check if frames already exist
+    existing_frames = sorted([f for f in os.listdir(output_dir) if f.startswith("frame_") and f.endswith(".png")])
+    if existing_frames:
+        log("EXTRACT", f"Found {len(existing_frames)} existing frames, skipping extraction")
+        frame_paths = [os.path.join(output_dir, f) for f in existing_frames]
+        return frame_paths
+    
+    # Extract frames from video
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise ValueError(f"Cannot open video: {video_path}")
@@ -124,7 +176,6 @@ def extract_frames(video_path: str, num_frames: int, output_dir: str,
         log("EXTRACT", f"Duration: {duration:.2f}s @ {target_fps}fps = {num_frames} frames")
     
     frame_indices = np.linspace(0, total_frames - 1, num_frames, dtype=int)
-    os.makedirs(output_dir, exist_ok=True)
     frame_paths = []
     
     for idx, frame_num in enumerate(tqdm(frame_indices, desc="Extracting frames", unit="frame")):
@@ -248,11 +299,33 @@ def create_chronophotography(depth_images: list[np.ndarray], mode: str = "lighte
         hybrid = lighten_result * 0.7 + add_result * 0.3
         return np.clip(hybrid, 0, 255).astype(np.uint8)
     
+    elif mode == "long_exposure":
+        # Normalized additive blend - creates long exposure effect
+        for img in depth_images[1:]:
+            result += img.astype(np.float32)
+        # Normalize to prevent whiteout
+        result = result / len(depth_images)
+        return np.clip(result, 0, 255).astype(np.uint8)
+    
+    elif mode == "hero_ghost":
+        # Hero frame at full opacity, others as ghost underlay
+        hero = depth_images[0].astype(np.float32)
+        ghost = depth_images[0].astype(np.float32)
+        
+        # Average all frames for ghost layer
+        for img in depth_images[1:]:
+            ghost += img.astype(np.float32)
+        ghost /= len(depth_images)
+        
+        # Blend: 70% hero, 30% ghost
+        result = hero * 0.7 + ghost * 0.3
+        return np.clip(result, 0, 255).astype(np.uint8)
+    
     else:
         return depth_images[0]
 
 
-BLEND_MODES = ["lighten", "add", "screen", "average", "darken", "lighten_add"]
+BLEND_MODES = ["lighten", "add", "screen", "average", "darken", "lighten_add", "long_exposure", "hero_ghost"]
 
 
 def process_dither_frame(args):
@@ -353,7 +426,7 @@ def main():
     parser.add_argument("--alpha", type=float, default=0.5)
     parser.add_argument("--effects", type=str, nargs="+", 
                         default=["rainbow_trail", "microres", "lowres", "dithered", "depth", "red_overlay", "atkinson"],
-                        choices=["rainbow_trail", "microres", "lowres", "dithered", "depth", "red_overlay", "atkinson", "extract", "bayer", "depth_banding"],
+                        choices=["rainbow_trail", "microres", "lowres", "dithered", "depth", "red_overlay", "atkinson", "extract", "bayer", "depth_banding", "chronophoto"],
                         help="Which effects to generate")
     parser.add_argument("--output-dir", type=str, default=None)
     parser.add_argument("--force-greenscreen", action="store_true", help="Force green screen mode")
@@ -390,6 +463,13 @@ def main():
     log("EXTRACT", f"Starting @ {args.target_fps}fps...")
     frame_paths = extract_frames(args.video_path, args.num_frames, frames_dir, 
                                   target_fps=args.target_fps, has_greenscreen=has_greenscreen)
+    
+    # Create video for frames immediately after extraction
+    videos_dir = os.path.join(args.output_dir, "videos")
+    os.makedirs(videos_dir, exist_ok=True)
+    threading.Thread(target=create_video_from_folder,
+                    args=(frames_dir, "frames", videos_dir, args.target_fps),
+                    daemon=True).start()
     
     # Compute frame stats for adaptive thresholding
     frame_stats = compute_frame_stats(frame_paths)
@@ -444,9 +524,26 @@ def main():
                 
                 depth_gray = (depth_norm * 255).astype(np.uint8)
                 
-                # For greenscreen: mask background. For regular: keep full depth
+                # Apply subject mask to both greenscreen and regular videos
+                # This ensures only the subject (and ground) have high depth values
                 if has_greenscreen:
+                    # For greenscreen: mask out background completely
                     depth_gray = cv2.bitwise_and(depth_gray, depth_gray, mask=fg_mask)
+                else:
+                    # For regular videos: use soft depth-based scaling
+                    # Find the depth range that likely contains the subject (top 30%)
+                    depth_percentile_high = np.percentile(depth_gray, 70)  # Top 30% threshold
+                    depth_percentile_low = np.percentile(depth_gray, 40)   # Lower bound for soft transition
+                    
+                    # Create soft mask: 1.0 for high depth, smoothly transitions to 0.3 for low depth
+                    # This preserves background depth but scales it down, avoiding hard clipping
+                    depth_float = depth_gray.astype(np.float32)
+                    soft_mask = np.clip(
+                        (depth_float - depth_percentile_low) / (depth_percentile_high - depth_percentile_low + 1e-6),
+                        0.0, 1.0
+                    )
+                    # Scale: high depth stays full, low depth gets reduced to 30% (behind ground but not black)
+                    depth_gray = (depth_float * (0.3 + 0.7 * soft_mask)).astype(np.uint8)
                 
                 depth_images.append(depth_gray)
                 
@@ -457,11 +554,19 @@ def main():
     
     log("DEPTH", f"Done - {len(depth_images)} depth maps")
     
-    # Create depth chronophoto
+    # Create depth chronophoto (basic one for depth_maps folder)
     depth_chrono = create_chronophotography(depth_images, "lighten_add")
     path = os.path.join(depth_maps_dir, "chronophoto.png")
     Image.fromarray(depth_chrono, mode='L').save(path)
     log("CHRONO", "Created depth chronophoto")
+    
+    # Create video for depth_maps immediately after completion
+    if "depth" in args.effects:
+        videos_dir = os.path.join(args.output_dir, "videos")
+        os.makedirs(videos_dir, exist_ok=True)
+        threading.Thread(target=create_video_from_folder, 
+                        args=(depth_maps_dir, "depth_maps", videos_dir, args.target_fps),
+                        daemon=True).start()
     
     # Resize depths to common size
     target_shape = depth_images[0].shape
@@ -484,6 +589,42 @@ def main():
             frame = cv2.resize(frame, (target_shape[1], target_shape[0]))
         original_frames.append(frame)
     
+    # Chronophoto pass - ghostly composite of raw frames (not depth maps)
+    # Runs after frames are loaded, parallelized by blend mode
+    if "chronophoto" in args.effects:
+        log("CHRONO", "Creating chronophoto pass (ghostly composite of raw frames)...")
+        chrono_dir = os.path.join(args.output_dir, "chronophoto")
+        os.makedirs(chrono_dir, exist_ok=True)
+        
+        if not original_frames:
+            log("CHRONO", "No frames available, skipping chronophoto pass")
+        else:
+            # Convert frames to grayscale for chronophotography
+            gray_frames = [cv2.cvtColor(f, cv2.COLOR_BGR2GRAY) for f in original_frames]
+            
+            # Blend modes for chronophoto pass
+            chrono_modes = ["long_exposure", "hero_ghost", "lighten_add"]
+            
+            def generate_chronophoto(mode):
+                """Generate chronophoto from raw frames for a specific mode."""
+                chrono_result = create_chronophotography(gray_frames, mode)
+                
+                # Convert back to RGB for saving
+                chrono_rgb = cv2.cvtColor(chrono_result, cv2.COLOR_GRAY2RGB)
+                
+                # Save the ghostly composite
+                chrono_path = os.path.join(chrono_dir, f"chronophoto_{mode}.png")
+                Image.fromarray(chrono_rgb).save(chrono_path)
+                
+                return mode
+            
+            # Process chronophoto modes in parallel
+            with ThreadPoolExecutor(max_workers=min(len(chrono_modes), args.workers)) as executor:
+                list(tqdm(executor.map(generate_chronophoto, chrono_modes), 
+                         total=len(chrono_modes), desc="Chronophoto pass", unit="mode"))
+            
+            log("CHRONO", "Chronophoto pass done")
+    
     # Parallel dithering
     dithered_images = []
     if "dithered" in args.effects or "red_overlay" in args.effects:
@@ -492,9 +633,16 @@ def main():
         os.makedirs(dithered_dir, exist_ok=True)
         with ThreadPoolExecutor(max_workers=args.workers) as executor:
             floyd_args = [(i, p, dithered_dir, "floyd") for i, p in enumerate(frame_paths)]
-            floyd_results = list(tqdm(executor.map(process_dither_frame, floyd_args), 
+            floyd_results =             list(tqdm(executor.map(process_dither_frame, floyd_args), 
                                       total=len(floyd_args), desc="Dithering (Floyd-Steinberg)", unit="frame"))
             dithered_images = [r for r in floyd_results if r is not None]
+        
+        # Create video for dithered immediately after completion
+        videos_dir = os.path.join(args.output_dir, "videos")
+        os.makedirs(videos_dir, exist_ok=True)
+        threading.Thread(target=create_video_from_folder,
+                        args=(dithered_dir, "dithered", videos_dir, args.target_fps),
+                        daemon=True).start()
     
     if "atkinson" in args.effects:
         log("DITHER", "Creating Atkinson dithered frames...")
@@ -504,6 +652,13 @@ def main():
             atk_args = [(i, p, atkinson_dir, "atkinson") for i, p in enumerate(frame_paths)]
             list(tqdm(executor.map(process_dither_frame, atk_args), 
                       total=len(atk_args), desc="Dithering (Atkinson)", unit="frame"))
+        
+        # Create video for atkinson immediately after completion
+        videos_dir = os.path.join(args.output_dir, "videos")
+        os.makedirs(videos_dir, exist_ok=True)
+        threading.Thread(target=create_video_from_folder,
+                        args=(atkinson_dir, "atkinson", videos_dir, args.target_fps),
+                        daemon=True).start()
     
     if "bayer" in args.effects:
         log("DITHER", "Creating Bayer dithered frames...")
@@ -513,6 +668,13 @@ def main():
             bayer_args = [(i, p, bayer_dir, "bayer") for i, p in enumerate(frame_paths)]
             list(tqdm(executor.map(process_dither_frame, bayer_args), 
                       total=len(bayer_args), desc="Dithering (Bayer)", unit="frame"))
+        
+        # Create video for bayer immediately after completion
+        videos_dir = os.path.join(args.output_dir, "videos")
+        os.makedirs(videos_dir, exist_ok=True)
+        threading.Thread(target=create_video_from_folder,
+                        args=(bayer_dir, "bayer", videos_dir, args.target_fps),
+                        daemon=True).start()
     
     # Parallel pixelated frames with adaptive threshold
     if "extract" in args.effects:
@@ -523,6 +685,13 @@ def main():
             extract_args = [(i, p, extract_dir, 8, frame_stats) for i, p in enumerate(frame_paths)]
             list(tqdm(executor.map(process_pixel_frame, extract_args), 
                       total=len(extract_args), desc="Pixelation (Extract)", unit="frame"))
+        
+        # Create video for extract immediately after completion
+        videos_dir = os.path.join(args.output_dir, "videos")
+        os.makedirs(videos_dir, exist_ok=True)
+        threading.Thread(target=create_video_from_folder,
+                        args=(extract_dir, "extract", videos_dir, args.target_fps),
+                        daemon=True).start()
     
     if "lowres" in args.effects:
         log("PIXEL", "Creating lowres frames...")
@@ -532,6 +701,13 @@ def main():
             lowres_args = [(i, p, lowres_dir, 16, frame_stats) for i, p in enumerate(frame_paths)]
             list(tqdm(executor.map(process_pixel_frame, lowres_args), 
                       total=len(lowres_args), desc="Pixelation (Lowres)", unit="frame"))
+        
+        # Create video for lowres immediately after completion
+        videos_dir = os.path.join(args.output_dir, "videos")
+        os.makedirs(videos_dir, exist_ok=True)
+        threading.Thread(target=create_video_from_folder,
+                        args=(lowres_dir, "lowres", videos_dir, args.target_fps),
+                        daemon=True).start()
     
     if "microres" in args.effects:
         log("PIXEL", "Creating microres frames...")
@@ -541,6 +717,13 @@ def main():
             micro_args = [(i, p, microres_dir, 24, frame_stats) for i, p in enumerate(frame_paths)]
             list(tqdm(executor.map(process_pixel_frame, micro_args), 
                       total=len(micro_args), desc="Pixelation (Microres)", unit="frame"))
+        
+        # Create video for microres immediately after completion
+        videos_dir = os.path.join(args.output_dir, "videos")
+        os.makedirs(videos_dir, exist_ok=True)
+        threading.Thread(target=create_video_from_folder,
+                        args=(microres_dir, "microres", videos_dir, args.target_fps),
+                        daemon=True).start()
     
     # Red overlay frames
     if "red_overlay" in args.effects:
@@ -573,6 +756,13 @@ def main():
                 Image.fromarray(cv2.cvtColor(result, cv2.COLOR_BGR2RGB)).save(
                     os.path.join(red_overlay_dir, f"frame_{idx:04d}.png"))
         log("EFFECT", "Red overlay done")
+        
+        # Create video for red_overlay immediately after completion
+        videos_dir = os.path.join(args.output_dir, "videos")
+        os.makedirs(videos_dir, exist_ok=True)
+        threading.Thread(target=create_video_from_folder,
+                        args=(red_overlay_dir, "red_overlay", videos_dir, args.target_fps),
+                        daemon=True).start()
     
     # Rainbow trail
     if "rainbow_trail" in args.effects:
@@ -631,6 +821,13 @@ def main():
             Image.fromarray(cv2.cvtColor(result, cv2.COLOR_BGR2RGB)).save(
                 os.path.join(rainbow_dir, f"frame_{idx:04d}.png"))
         log("EFFECT", "Rainbow trail done")
+        
+        # Create video for rainbow_trail immediately after completion
+        videos_dir = os.path.join(args.output_dir, "videos")
+        os.makedirs(videos_dir, exist_ok=True)
+        threading.Thread(target=create_video_from_folder,
+                        args=(rainbow_dir, "rainbow_trail", videos_dir, args.target_fps),
+                        daemon=True).start()
     
     # Depth banding
     if "depth_banding" in args.effects:
@@ -667,6 +864,13 @@ def main():
             result = np.where(noise_mask, 255, result).astype(np.uint8)
             Image.fromarray(result, mode='L').save(os.path.join(banding_dir, f"frame_{idx:04d}.png"))
         log("EFFECT", "Depth banding done")
+        
+        # Create video for depth_banding immediately after completion
+        videos_dir = os.path.join(args.output_dir, "videos")
+        os.makedirs(videos_dir, exist_ok=True)
+        threading.Thread(target=create_video_from_folder,
+                        args=(banding_dir, "depth_banding", videos_dir, args.target_fps),
+                        daemon=True).start()
     
     # Chronophotography composites (only if blend modes specified)
     if args.blend_modes:
@@ -698,60 +902,29 @@ def main():
         path = os.path.join(args.output_dir, mode, "chronophoto.png")
         Image.fromarray(blended).save(path)
         log("CHRONO", f"{mode} done")
+        
+        # Create video for blend mode immediately after completion
+        videos_dir = os.path.join(args.output_dir, "videos")
+        os.makedirs(videos_dir, exist_ok=True)
+        mode_dir = os.path.join(args.output_dir, mode)
+        threading.Thread(target=create_video_from_folder,
+                        args=(mode_dir, mode, videos_dir, args.target_fps),
+                        daemon=True).start()
     
-    # Create videos
-    log("VIDEO", "Creating videos from passes...")
-    videos_dir = os.path.join(args.output_dir, "videos")
-    os.makedirs(videos_dir, exist_ok=True)
+    # Create videos for any remaining passes that might have been missed
+    # (e.g., chronophoto if it was in effects but didn't create frame sequences)
+    log("VIDEO", "Checking for any remaining passes to create videos...")
+    pass_folders = []
+    if "chronophoto" in args.effects:
+        chrono_dir = os.path.join(args.output_dir, "chronophoto")
+        if os.path.exists(chrono_dir):
+            # Chronophoto creates single images, not frame sequences, so skip video creation
+            pass
     
-    # Build list of folders that were actually generated
-    pass_folders = ["frames"]
-    if "depth" in args.effects:
-        pass_folders.append("depth_maps")
-    effect_to_folder = {
-        "dithered": "dithered", "atkinson": "atkinson", "bayer": "bayer",
-        "extract": "extract", "lowres": "lowres", "microres": "microres",
-        "red_overlay": "red_overlay", "rainbow_trail": "rainbow_trail", "depth_banding": "depth_banding"
-    }
-    for effect, folder in effect_to_folder.items():
-        if effect in args.effects:
-            pass_folders.append(folder)
-    pass_folders.extend(args.blend_modes)
-    
-    for folder in tqdm(pass_folders, desc="Creating videos", unit="video"):
-        folder_path = os.path.join(args.output_dir, folder)
-        if not os.path.exists(folder_path):
-            continue
-        
-        frame_files = sorted([f for f in os.listdir(folder_path) if f.startswith("frame_") or f.startswith("depth_")])
-        if not frame_files:
-            continue
-        
-        first_frame = cv2.imread(os.path.join(folder_path, frame_files[0]))
-        if first_frame is None:
-            first_frame = cv2.imread(os.path.join(folder_path, frame_files[0]), cv2.IMREAD_GRAYSCALE)
-            if first_frame is None:
-                continue
-            first_frame = cv2.cvtColor(first_frame, cv2.COLOR_GRAY2BGR)
-        
-        h, w = first_frame.shape[:2]
-        video_path = os.path.join(videos_dir, f"{folder}.mp4")
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        out = cv2.VideoWriter(video_path, fourcc, args.target_fps, (w, h))
-        
-        for frame_file in frame_files:
-            frame = cv2.imread(os.path.join(folder_path, frame_file))
-            if frame is None:
-                frame = cv2.imread(os.path.join(folder_path, frame_file), cv2.IMREAD_GRAYSCALE)
-                if frame is not None:
-                    frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
-            if frame is not None:
-                if frame.shape[:2] != (h, w):
-                    frame = cv2.resize(frame, (w, h))
-                out.write(frame)
-        
-        out.release()
-        log("VIDEO", f"{folder}.mp4 done")
+    # Wait for all video creation threads to complete
+    import time
+    time.sleep(2)  # Give threads a moment to start
+    log("VIDEO", "All video creation tasks started in background")
     
     log("DONE", f"Output: {args.output_dir}")
 

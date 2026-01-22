@@ -78,9 +78,11 @@ flowchart LR
 - 🎨 TD visual effects (compositing, overlays, score display)
 - 🎨 TD auto-update NDI sources when participants change
 - 📹 Recording module (capture participant streams)
+- 🎬 Fix green screen edge artifacts in depth_blend_video.py
+- 🎬 Fix depth map threshold parameters (refine soft scaling approach)
 
 ### In Progress
-- <!-- none -->
+- 🎬 Generating chronophotos - ghostly composites of raw frames using all frames for long exposure trail effects (see `pre_render/CHRONOPHOTO_CONTEXT.md`)
 
 ### Done
 - ✅ Migration: pre_render scripts + TD project from archive
