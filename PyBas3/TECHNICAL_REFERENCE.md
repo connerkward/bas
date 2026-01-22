@@ -1,7 +1,7 @@
 # PyBas3 Technical Reference
 
-> **Task tracking lives in:** `agents/SESSION.md`  
-> **Agent protocols:** `agents/AGENT_0_SHARED.md`
+> **Tasks:** [Linear BAS project](https://linear.app/ckward-workspace/project/bas-d90c3a3ab597)  
+> **Protocols:** `agents/AGENT_0_SHARED.md`
 
 ## Installation Context
 **Dark gallery environment** - low ambient light, primary illumination from projection.
@@ -51,8 +51,8 @@ Modular system for interactive projection mapping with multi-person pose trackin
 PyBas3/
 ├── TECHNICAL_REFERENCE.md          # This file
 ├── requirements.txt
-├── agents/                         # Agent coordination
-│   ├── SESSION.md                  # Task tracking + handoff
+├── agents/                         # Coordination docs
+│   ├── SESSION.md                  # Quick reference
 │   └── ...
 ├── common/                         # Shared protocols & constants
 │   ├── __init__.py
@@ -272,7 +272,7 @@ Packages (defined in `pyproject.toml`):
 
 **Current state:** Soft scaling implemented, needs testing/refinement.
 
-**See:** `agents/SESSION.md` for current tasks
+**See:** [Linear BAS project](https://linear.app/ckward-workspace/project/bas-d90c3a3ab597) (Personal team) for current tasks
 
 ---
 

@@ -49,7 +49,7 @@ Three blend modes are generated in parallel:
 - ✅ Frame reuse optimization added
 - ✅ Implementation complete
 
-**Note:** For active tasks, see `agents/SESSION.md`
+**Note:** For active tasks, see [Linear BAS project](https://linear.app/ckward-workspace/project/bas-d90c3a3ab597)
 
 ## Output Files
 

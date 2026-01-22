@@ -8,36 +8,28 @@ alwaysApply: true
 ## Key Files
 | Purpose | File |
 |---------|------|
-| Tasks & handoff | `PyBas3/agents/SESSION.md` |
-| Contracts & protocols | `PyBas3/agents/AGENT_0_SHARED.md` |
+| Tasks | [Linear BAS project](https://linear.app/ckward-workspace/project/bas-d90c3a3ab597) |
+| Protocols | `PyBas3/agents/AGENT_0_SHARED.md` |
+| Quick reference | `PyBas3/agents/SESSION.md` |
 | Technical reference | `PyBas3/TECHNICAL_REFERENCE.md` |
-| Agent status | `PyBas3/agents/status/` |
 
 ## Command Handlers
 
 ### When user says "spin up"
-1. Read `PyBas3/agents/SESSION.md` for context + tasks
-2. **Claim role:**
+1. **Review Linear:** Check [Linear BAS project](https://linear.app/ckward-workspace/project/bas-d90c3a3ab597) for tasks
+2. **Pick role:**
    - If user specified (e.g. "spin up as Iris") → use that role
    - "spin up as Orchestrator" → cross-lane integration testing (can touch all modules)
-   - If not specified → read `status/*` files, pick first available lane role:
-     - `active: no` → available
-     - `active: yes` but `last_updated` >2 hours → stale, available
-   - If still unclear → ask user
-3. Update YOUR status file: `status/agent_<N>_<lane>.md`
-   - Set `active: yes`, `last_updated: <ISO timestamp>`, task
-4. Pick a task from backlog matching your lane
-6. Start working following `AGENT_0_SHARED.md` contracts
+   - If not specified → ask user
+3. Pick a task from Linear matching your lane
+4. Start working
 
 ### When user says "spin down"
 1. **Test code changes:**
    - Run `uv run python tests/test_integration.py` for integration tests
    - Run module-specific tests if they exist
    - If testing not verifiable → **FLAG USER AND PAUSE**
-   - Document test status in status file
-2. Update `SESSION.md`: what changed, current state
-3. Update your status file: `active: no`, summary, test status
-4. **DO NOT COMMIT** - leave changes for human to review and commit
+2. **DO NOT COMMIT** - leave changes for human to review and commit
 
 ## Code Style
 - Python: PEP 8, type hints preferred
@@ -66,4 +58,3 @@ alwaysApply: true
 - Modify `dist/` folders
 - Git push (human does that)
 - Over-engineer
-- Edit another agent's status file (only your own)
