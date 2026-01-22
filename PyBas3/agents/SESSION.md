@@ -28,7 +28,7 @@ uv run python scoring/pose_scorer.py
 uv run python mediapipe/live_dashboard.py
 ```
 
-## Architecture Status (as of: <!-- YYYY-MM-DD -->)
+## Architecture Status (as of: 2026-01-14)
 
 ```mermaid
 flowchart LR
@@ -74,35 +74,52 @@ flowchart LR
 
 ## Tasks
 
-### Backlog
-- 🎨 TD visual effects (compositing, overlays, score display)
-- 🎨 TD auto-update NDI sources when participants change
-- 📹 Recording module (capture participant streams)
-- 🎬 Fix green screen edge artifacts in depth_blend_video.py
-- 🎬 Fix depth map threshold parameters (refine soft scaling approach)
+> **Single source of truth:** All active tasks live here. TODOs in code/docs reference this file.
 
-### In Progress
-- 🎬 Generating chronophotos - ghostly composites of raw frames using all frames for long exposure trail effects (see `pre_render/CHRONOPHOTO_CONTEXT.md`)
+### 🎨 TouchDesigner (Canvas)
+**Backlog:**
+- Visual effects (compositing, overlays, score display)
+- Auto-update NDI sources when participants change
 
-### Done
-- ✅ Migration: pre_render scripts + TD project from archive
-- ✅ 👁️ MediaPipe multi-person detection + pHash UUIDs
-- ✅ 👁️ SharedMemoryPoseWriter (writes to shared memory for Scoring)
-- ✅ 🎯 Shared memory reader + score calculator
-- ✅ 🎯 Per-UUID score JSON writer
-- ✅ Common module: shared protocols & constants (`common/protocols.py`, `common/shared_memory.py`)
-- ✅ 🎨 TD: NDI stream discovery + UUID parsing (`td_scripts/ndi_discovery.py`)
-- ✅ 🎨 TD: Score JSON file watcher (`td_scripts/score_watcher.py`)
-- ✅ 🎨 TD: Unified ParticipantManager (`td_scripts/td_participant_manager.py`)
-- ✅ UV package manager setup (`pyproject.toml`)
-- ✅ 🔄 Integration tests (`tests/test_integration.py`) - all 4 passing
-- ✅ 👁️ Per-participant NDI streams (`BAS_Participant_<UUID>`)
-- ✅ 👁️ Zone UI: sliders + click-to-set corners + Z-depth visualization
-- ✅ 🔄 Launcher script (`orchestrator.py`) - starts Vision + Scoring + optional Dashboard
-- ✅ 🎨 TD: Execute DAT integration script (`td_scripts/td_execute.py`)
-- ✅ 🎨 TD: NDI video streams working (BGRX format fix)
-- ✅ 🎨 TD: TouchDesigner MCP server installed for Cursor control
-- ✅ 🎨 TD: Score data + NDI streams flowing to TouchDesigner
+### 📹 Recording
+**Backlog:**
+- Capture participant streams from NDI with JSON metadata
+
+### 🎬 Pre-render Pipeline
+**Backlog:**
+- Fix green screen edge artifacts in `depth_blend_video.py`
+- Refine depth map threshold parameters (soft scaling approach)
+
+**Status:**
+- ✅ Chronophoto generation implemented (see `pre_render/CHRONOPHOTO_CONTEXT.md`)
+  - Three blend modes: `long_exposure`, `hero_ghost`, `lighten_add`
+  - Parallel processing, frame reuse optimization
+
+### ✅ Completed (Recent)
+**Core System:**
+- MediaPipe multi-person detection + pHash UUIDs
+- Shared memory protocol (`common/` module)
+- Per-participant NDI streams (`BAS_Participant_<UUID>`)
+- Zone UI with sliders + click-to-set corners + Z-depth visualization
+- Orchestrator launcher script
+
+**Scoring:**
+- Shared memory reader + score calculator
+- Per-UUID score JSON writer
+
+**TouchDesigner:**
+- NDI stream discovery + UUID parsing
+- Score JSON file watcher
+- Unified ParticipantManager
+- Execute DAT integration script
+- NDI video streams (BGRX format)
+- TouchDesigner MCP server installed
+- Score data + NDI streams flowing to TD
+
+**Infrastructure:**
+- UV package manager setup
+- Integration tests (4/4 passing)
+- Pre-render scripts + TD project migrated
 
 ## Blockers
-- <!-- delete when resolved -->
+- None

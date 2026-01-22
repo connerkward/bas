@@ -2,7 +2,7 @@
 
 ## Commands
 - **"spin up"** → claim role + task, start
-- **"spin down"** → update SESSION.md, commit
+- **"spin down"** → test, update SESSION.md, update status, commit (if in worktree)
 
 ## Docs
 

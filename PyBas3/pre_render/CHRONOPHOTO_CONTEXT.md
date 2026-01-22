@@ -37,7 +37,7 @@ Three blend modes are generated in parallel:
 
 1. **Initial approach**: Created chronophoto variations script with different frame counts (3, 5, 7, 10) and selection strategies (sequential, most different, high variance)
 2. **Depth map composites**: Initially tried compositing depth maps onto raw frames, but user wanted raw frame composites only
-3. **Pipeline integration**: Added as separate pass that runs after prerequisite passes (depth maps, frame loading)
+3. **Pipeline integration**: Added as separate pass that runs after prerequisite passmes (depth maps, frame loading)
 4. **Parallelization**: Process blend modes in parallel for efficiency
 5. **Full frame usage**: For long_exposure mode, use ALL frames to get continuous trail effect (not just subset)
 
@@ -47,7 +47,9 @@ Three blend modes are generated in parallel:
 - ✅ Three blend modes implemented (long_exposure, hero_ghost, lighten_add)
 - ✅ Parallel processing by blend mode
 - ✅ Frame reuse optimization added
-- 🔄 In progress: Testing with runside-megaslow-compressed video
+- ✅ Implementation complete
+
+**Note:** For active tasks, see `agents/SESSION.md`
 
 ## Output Files
 

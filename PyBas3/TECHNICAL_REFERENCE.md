@@ -1,7 +1,7 @@
 # PyBas3 Technical Reference
 
 > **Task tracking lives in:** `agents/SESSION.md`  
-> **Agent protocols:** `agents/AGENTIC_INSTRUCTIONS.md`
+> **Agent protocols:** `agents/AGENT_0_SHARED.md`
 
 ## Installation Context
 **Dark gallery environment** - low ambient light, primary illumination from projection.
@@ -72,7 +72,6 @@ PyBas3/
 ├── pre_render/                     # Offline pipeline (migrated)
 │   ├── depth_blend_video.py
 │   └── frames_to_video.py
-```
 └── td_scripts/                     # TouchDesigner (migrated)
     └── ConnerTD/ConnerTD.toe
 ```
@@ -273,9 +272,7 @@ Packages (defined in `pyproject.toml`):
 
 **Current state:** Soft scaling implemented, needs testing/refinement.
 
-**TODOs:**
-- Fix green screen edge artifacts
-- Refine depth map threshold parameters
+**See:** `agents/SESSION.md` for current tasks
 
 ---
 
@@ -284,11 +281,11 @@ Packages (defined in `pyproject.toml`):
 ### Module Tests
 ```bash
 # Vision
-cd PyBas3/mediapipe && python test_mediapipe.py --display
+cd PyBas3/mediapipe && ./test_vision.sh
 
 # Scoring
 cd PyBas3/scoring && python reference_builder.py ../pre_render/output/videos/runside.mp4
-cd PyBas3/scoring && python test_scoring.py
+cd PyBas3/scoring && python test_scorer.py
 ```
 
 ### Integration Test
