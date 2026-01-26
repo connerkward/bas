@@ -51,29 +51,42 @@ Modular system for interactive projection mapping with multi-person pose trackin
 PyBas3/
 ├── TECHNICAL_REFERENCE.md          # This file
 ├── requirements.txt
+├── orchestrator.py                 # Main entry point for running full system
+├── participants_db.json            # UUID persistence (atomic writes)
+├── zone_config.json                # Master zone configuration
 ├── agents/                         # Coordination docs
 │   ├── SESSION.md                  # Quick reference
-│   └── ...
+│   └── AGENT_0_SHARED.md           # Shared protocols
 ├── common/                         # Shared protocols & constants
 │   ├── __init__.py
 │   ├── protocols.py                # Data structures & constants
 │   └── shared_memory.py            # Binary protocol encoding/decoding
 ├── mediapipe/                      # Process 1
 │   ├── multi_person_detector.py
+│   ├── participant_tracker.py      # pHash UUID assignment
 │   ├── ndi_streamer.py
 │   ├── shared_memory_writer.py
-│   ├── zone_config.json
-│   └── participants_db.json
+│   ├── live_dashboard.py           # Real-time monitoring
+│   └── zone_config.json            # Runtime zone config
 ├── scoring/                        # Process 2
 │   ├── pose_scorer.py
 │   ├── reference_builder.py
 │   ├── shared_memory_reader.py
 │   └── output/participant_<uuid>_score.json
-├── pre_render/                     # Offline pipeline (migrated)
-│   ├── depth_blend_video.py
-│   └── frames_to_video.py
-└── td_scripts/                     # TouchDesigner (migrated)
-    └── ConnerTD/ConnerTD.toe
+├── pre_render/                     # Offline pipeline
+│   ├── depth_blend_video.py        # Main processing script
+│   ├── frames_to_video.py
+│   ├── generate_chronophoto_variations.py
+│   ├── pose_skeleton_render.py
+│   └── CHRONOPHOTO_CONTEXT.md
+├── td_scripts/                     # TouchDesigner integration
+│   ├── td_integration.py           # Main TD API
+│   ├── td_participant_manager.py
+│   ├── ndi_discovery.py
+│   ├── score_watcher.py
+│   └── ConnerTD/ConnerTD.toe
+└── tests/
+    └── test_integration.py
 ```
 
 ---
