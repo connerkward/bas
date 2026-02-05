@@ -9,6 +9,7 @@ import cv2
 import numpy as np
 import os
 import sys
+from datetime import date
 from pathlib import Path
 from tqdm import tqdm
 
@@ -77,11 +78,12 @@ def main():
     colors = {"white": (255, 255, 255), "green": (0, 255, 0), "red": (0, 0, 255), "blue": (255, 0, 0)}
     color = colors[args.color]
     
-    # Output dir
+    # Output dir: pre_render/outputs/<YYYY-MM-DD>/<video_name>_skeleton
     if args.output_dir is None:
         script_dir = Path(__file__).parent
+        date_str = date.today().isoformat()
         video_name = Path(args.video_path).stem
-        args.output_dir = str(script_dir / "outputs" / f"{video_name}_skeleton")
+        args.output_dir = str(script_dir / "outputs" / date_str / f"{video_name}_skeleton")
     
     frames_dir = Path(args.output_dir) / "frames"
     frames_dir.mkdir(parents=True, exist_ok=True)

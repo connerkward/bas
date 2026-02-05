@@ -99,46 +99,61 @@ def apply_all_effects(raw_frame, chroma_frame, depth_map, frame_stats):
         result[:, :, 0] = np.where(dith_mask, 20, result[:, :, 0])
         results[f"{frame_type}_red_overlay"] = result
     
-    # Depth banding (only on chroma since depth is from raw)
+    # Depth banding - contour lines following depth topology (quantize + edge detect)
     print("  Applying depth banding...")
-    for frame_type, frame in [("raw", raw_frame), ("chroma", chroma_frame)]:
-        result = np.zeros((h, w), dtype=np.uint8)
-        for y in range(h):
-            for x in range(w):
-                d = depth_map[y, x]
-                if d < 10:
-                    continue
-                line_spacing = max(2, int(20 - d / 15))
-                wave = int(np.sin(y * 0.1 + d * 0.05) * 3)
-                if (y + wave) % line_spacing < 2:
-                    result[y, x] = 255
-        noise_mask = np.random.random((h, w)) < (depth_map.astype(np.float32) / 255.0 * 0.1)
-        result = np.where(noise_mask, 255, result).astype(np.uint8)
-        results[f"{frame_type}_depth_banding"] = result
+    
+    depth_thresh, _ = cv2.threshold(depth_map, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    subject_mask = depth_map > depth_thresh
+    print(f"    Auto depth threshold: {depth_thresh}")
+    
+    masked_depth = np.where(subject_mask, depth_map, 0).astype(np.uint8)
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+    enhanced = clahe.apply(masked_depth)
+    smoothed = cv2.GaussianBlur(enhanced, (3, 3), 0)  # blur=3 = sharper internal lines
+    
+    num_bands = 12  # Fewer bands = distinct internal contours; more = merges to silhouette
+    quantized = (smoothed.astype(np.float32) / 255.0 * num_bands).astype(np.uint8)
+    quantized = (quantized * (255 // max(1, num_bands))).astype(np.uint8)
+    edges = cv2.Canny(quantized, 15, 60)
+    kernel = np.ones((2, 2), np.uint8)
+    edges = cv2.dilate(edges, kernel, iterations=1)
+    result = np.where(subject_mask, edges, 0).astype(np.uint8)
+    
+    for frame_type in ["raw", "chroma"]:
+        results[f"{frame_type}_depth_banding"] = result.copy()
     
     return results
 
 def main():
-    # Get frame paths
+    use_fallback_chroma = False
     base_dir = "outputs/runside-megaslow-compressed_blend_output/chroma_keyed"
     frame_num = "0100"
     
     raw_path = os.path.join(base_dir, "raw_frames", f"frame_{frame_num}.png")
     chroma_path = os.path.join(base_dir, "chroma_keyed", f"frame_{frame_num}.png")
     
-    # Try nested structure if needed
     if not os.path.exists(chroma_path):
         chroma_path = os.path.join(base_dir, "chroma_keyed", "chroma_keyed", f"frame_{frame_num}.png")
     
+    use_fallback_chroma = False
+    fallback = "outputs/test_frames/frame.png"
     if not os.path.exists(raw_path) or not os.path.exists(chroma_path):
-        print(f"Error: Frames not found")
-        print(f"  Raw: {raw_path} ({'exists' if os.path.exists(raw_path) else 'missing'})")
-        print(f"  Chroma: {chroma_path} ({'exists' if os.path.exists(chroma_path) else 'missing'})")
-        sys.exit(1)
+        if os.path.exists(fallback):
+            raw_path = fallback
+            use_fallback_chroma = True
+            print(f"Using fallback frame: {fallback}")
+        else:
+            print(f"Error: Frames not found")
+            print(f"  Raw: {raw_path} ({'exists' if os.path.exists(raw_path) else 'missing'})")
+            print(f"  Chroma: {chroma_path} ({'exists' if os.path.exists(chroma_path) else 'missing'})")
+            print(f"  Fallback: {fallback} ({'exists' if os.path.exists(fallback) else 'missing'})")
+            sys.exit(1)
     
     print("Loading frames...")
     raw_frame = cv2.imread(raw_path)
-    chroma_frame = cv2.imread(chroma_path)
+    chroma_frame = cv2.imread(chroma_path) if not use_fallback_chroma else None
+    if use_fallback_chroma and raw_frame is not None:
+        chroma_frame, _ = chroma_key_green(raw_frame)
     
     if raw_frame is None or chroma_frame is None:
         print("Failed to load frames")

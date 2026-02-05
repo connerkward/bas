@@ -7,7 +7,6 @@ Supports both green screen and regular videos with auto-detection.
 import argparse
 import os
 import sys
-from datetime import date
 import cv2
 import numpy as np
 import torch
@@ -845,14 +844,11 @@ def main():
     
     args = parser.parse_args()
     
-    # Generate output dir: pre_render/outputs/<YYYY-MM-DD>/<video_basename>_blend_output
+    # Generate output dir: pre_render/outputs/<video_basename>_blend_output
     if args.output_dir is None:
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        date_str = date.today().isoformat()
-        default_root = os.path.join(script_dir, "outputs", date_str)
-        os.makedirs(default_root, exist_ok=True)
         video_basename = os.path.splitext(os.path.basename(args.video_path))[0]
-        args.output_dir = os.path.join(default_root, f"{video_basename}_blend_output")
+        args.output_dir = os.path.join(script_dir, "outputs", f"{video_basename}_blend_output")
     
     log("INIT", f"Processing {args.video_path}")
     log("INIT", f"Device: {args.device}, Workers: {args.workers}, Batch: {args.batch_size}")
@@ -1085,47 +1081,40 @@ def main():
                 frame = cv2.resize(frame, (target_shape[1], target_shape[0]))
             original_frames.append(frame)
     
-    # Chronophoto pass - Marey-style from raw monochromed frames (not depth maps)
+    # Chronophoto pass - Marey-style: silhouettes from chroma_keyed, subsampled poses, lighten composite (no spider blur)
     if "chronophoto" in args.effects:
-        log("CHRONO", "Creating chronophoto pass (Marey-style from raw frames)...")
+        log("CHRONO", "Creating Marey chronophoto (silhouettes, subsampled poses)...")
         chrono_dir = os.path.join(args.output_dir, "chronophoto")
         os.makedirs(chrono_dir, exist_ok=True)
-        # Prefer raw_frames for Marey look; fallback to chroma_keyed
-        chrono_paths = raw_frame_paths if (raw_frame_paths and len(raw_frame_paths) == len(frame_paths)) else frame_paths
+        # Use chroma_keyed so we have subject vs background
         chrono_frames = []
-        for p in chrono_paths:
+        for p in frame_paths:
             f = cv2.imread(p)
             if f is None:
                 continue
             if target_shape is not None and f.shape[:2] != target_shape:
                 f = cv2.resize(f, (target_shape[1], target_shape[0]))
             chrono_frames.append(f)
-        gray_frames = [cv2.cvtColor(f, cv2.COLOR_BGR2GRAY) for f in chrono_frames]
-        if not gray_frames:
+        if not chrono_frames:
             log("CHRONO", "No frames available, skipping chronophoto pass")
         else:
-            
-            # Blend modes for chronophoto pass
-            chrono_modes = ["long_exposure", "hero_ghost", "lighten_add"]
-            
-            def generate_chronophoto(mode):
-                """Generate chronophoto from raw frames for a specific mode."""
-                chrono_result = create_chronophotography(gray_frames, mode)
-                
-                # Convert back to RGB for saving
-                chrono_rgb = cv2.cvtColor(chrono_result, cv2.COLOR_GRAY2RGB)
-                
-                # Save the ghostly composite
-                chrono_path = os.path.join(chrono_dir, f"chronophoto_{mode}.png")
-                Image.fromarray(chrono_rgb).save(chrono_path)
-                
-                return mode
-            
-            # Process chronophoto modes in parallel
-            with ThreadPoolExecutor(max_workers=min(len(chrono_modes), args.workers)) as executor:
-                list(tqdm(executor.map(generate_chronophoto, chrono_modes), 
-                         total=len(chrono_modes), desc="Chronophoto pass", unit="mode"))
-            
+            # Subsample to discrete poses (avoid spider)
+            n_poses = min(12, len(chrono_frames))
+            indices = np.linspace(0, len(chrono_frames) - 1, n_poses, dtype=int)
+            sampled = [chrono_frames[i] for i in indices]
+            # Silhouette: subject = non-bg (chroma_keyed has black or dark bg)
+            silhouettes = []
+            for f in sampled:
+                g = cv2.cvtColor(f, cv2.COLOR_BGR2GRAY)
+                _, subject = cv2.threshold(g, 25, 255, cv2.THRESH_BINARY)
+                silhouettes.append(subject)
+            # Lighten composite: each pose adds white on black → clean overlapping figures
+            out = silhouettes[0].astype(np.float32)
+            for s in silhouettes[1:]:
+                out = np.maximum(out, s.astype(np.float32))
+            out = np.clip(out, 0, 255).astype(np.uint8)
+            chrono_path = os.path.join(chrono_dir, "chronophoto.png")
+            Image.fromarray(out, mode="L").save(chrono_path)
             log("CHRONO", "Chronophoto pass done")
     
     # Process independent effects while depth estimation runs (if depth is running)

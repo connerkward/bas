@@ -78,6 +78,7 @@ PyBas3/
 │   ├── frames_to_video.py
 │   ├── generate_chronophoto_variations.py
 │   ├── pose_skeleton_render.py
+│   ├── outputs/<YYYY-MM-DD>/       # Pre-render outputs go in date-stamped folder
 │   └── CHRONOPHOTO_CONTEXT.md
 ├── td_scripts/                     # TouchDesigner integration
 │   ├── td_integration.py           # Main TD API
@@ -88,6 +89,8 @@ PyBas3/
 └── tests/
     └── test_integration.py
 ```
+
+**Pre-render note:** Frame interpolation is done as a ComfyUI workload on the desktop (workflow in comfyui-workflows-bas), not via a script in this repo. See `pre_render/SESSION_DEPTH_BLEND_AND_INTERPOLATION.md` §4.
 
 ---
 

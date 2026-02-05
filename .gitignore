@@ -1,7 +1,30 @@
 .DS_Store
 
-# OpenMemory - IDE/Assistant specific rules
-.cursor/rules/openmemory.mdc
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
 *.pyc
-.DS_Store
-.DS_Store
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+*.egg
+
+# Numba cache
+*.nbc
+*.nbi
+
+# Node
+node_modules/
+
+# Env/secrets
+.env
+.env.*
+!.env.example
+
+# IDE/Assistant
+.cursor/rules/openmemory.mdc
+
+# Logs
+*.log

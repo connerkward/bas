@@ -49,6 +49,10 @@ alwaysApply: true
 - **NEVER say "here's how to test it" - RUN THE TEST YOURSELF and verify output**
 - Don't leave user hanging with instructions - execute and confirm results
 
+## Pre-render outputs
+- Default: `PyBas3/pre_render/outputs/<video_basename>_blend_output` (no dated parent, no extra copies)
+- Dated subfolders only when explicitly needed (e.g. `outputs/2026-02-04/<name>`)
+
 ## Architecture
 - Each module = independent process
 - No shared Python state; communicate via NDI, shared memory, or files
