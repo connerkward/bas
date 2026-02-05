@@ -1,0 +1,10 @@
+---
+description: Do not add Cursor as commit author
+alwaysApply: true
+---
+
+# Git Commits
+
+- Never set Cursor, Copilot, or AI tool as commit author
+- Use the human user's git config (user.name, user.email)
+- Commits must attribute the human, not the AI

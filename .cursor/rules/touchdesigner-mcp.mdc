@@ -1,0 +1,24 @@
+---
+description: TouchDesigner MCP – arrange nodes after creating or modifying
+alwaysApply: true
+---
+
+# TouchDesigner MCP
+
+When using TouchDesigner MCP tools (`mcp_touchdesigner_*`):
+
+1. **Arrange nodes after creation or wiring** – set `nodeCenterX` / `nodeCenterY` on OPs so the network is readable.
+2. **Left-to-right flow** – controls → logic → sources → processing → outputs.
+3. **Vertical stacking** – related nodes (e.g. timelines, levels) stacked with ~90–140px spacing.
+4. **Skip if layout already exists** – only adjust when you add or change the network.
+
+Example layout pass (run via `execute_python_script`):
+
+```python
+dx, dy = 140, 90
+def lay(n, x, y):
+    if n:
+        n.nodeCenterX = x
+        n.nodeCenterY = y
+# ... apply per column
+```

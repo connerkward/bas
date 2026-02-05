@@ -1,88 +1,122 @@
 # Desync – TouchDesigner Chronophoto Project
 
-Chronophotographic runner with sync/desync cycle: multiple time-offset timelines, composite (black figures on white), red tint, and optional mono output.
+Real-time chronophotographic effect with sync/desync cycle using image sequences.
 
 ## What It Does
 
-- **5 timelines** play the same video with phase offsets. Offsets are driven by a **desync modulator**: 3s fully synced → 8s S-curve desync → 3s synced again, repeating.
-- **Composite**: minimum blend → black figures on white background.
-- **Red tint**: Level TOP (red only) after composite.
-- **Two outputs**: `out_color` (red tinted), `out_mono` (red then grayscale).
+- **3 timelines** play the same image sequence with phase offsets
+- **Cycle**: 5s sync → 10s desync (cosine ramp) → 5s sync, repeating (20s total)
+- **Composite**: chained min/max blend (toggle for black/white background)
+- **Cross dissolve**: smooth 30-frame fade at loop boundaries
+- **Outputs**: `out_color`, `out_mono`, `out_invert`
 
-## Project Layout (in `/project1/desync`)
+## Project Layout (`/project1/desync`)
 
-| Group | Nodes |
-|-------|--------|
-| **CONTROLS** (left) | `sync_hold`, `desync_duration`, `spread`, `baseline_fps` (constantCHOPs) |
-| **DESYNC MOD** | `desync_mod_callbacks` (textDAT), `desync_mod` (scriptCHOP) |
-| **TIMELINES** | `timeline0` … `timeline4` (moviefileinTOP) |
-| **LEVELS** | `level0` … `level4` (levelTOP) |
-| **BACKGROUND** | `background` (constantTOP, white 1920×1080) |
-| **COMPOSITE** | `out` (compositeTOP, operand = minimum) |
-| **POST** | `red_tint_level` (levelTOP), `post_mono` (monochromeTOP) |
-
-**Outputs** (in `/project1`): `out_color`, `out_mono` (nullTOP).
+| Column | Nodes |
+|--------|-------|
+| **Controls** | `sync_hold`, `desync_duration`, `spread`, `baseline_fps`, `fade_zone`, `invert_mode` |
+| **Desync** | `desync_val` (constantCHOP with expression) |
+| **Timelines** | `timeline0`, `timeline2`, `timeline4` (moviefileinTOP) |
+| **Wraps** | `wrap0`, `wrap2`, `wrap4` (for cross dissolve) |
+| **Crosses** | `cross0`, `cross2`, `cross4` (crossTOP) |
+| **Monos** | `mono0`, `mono2`, `mono4`, `background` |
+| **Composites** | `comp0` → `comp1` → `comp_final` (chained) |
+| **Post** | `post_mono`, `invert` |
+| **Outputs** | `out_color`, `out_mono`, `out_invert` |
 
 ## Control Parameters
 
 | Node | Channel | Default | Meaning |
 |------|---------|---------|---------|
-| `sync_hold` | sec | 3 | Seconds of full sync at start and end of cycle |
-| `desync_duration` | sec | 8 | Seconds over which desync ramps up then down |
-| `spread` | frames | 200 | Max frame offset for outer timelines at full desync |
-| `baseline_fps` | fps | 30 | Playback speed (frames per second) |
+| `sync_hold` | sec | 5 | Seconds of full sync at start/end of cycle |
+| `desync_duration` | sec | 10 | Seconds of desync phase |
+| `spread` | frames | 65 | Max frame offset at full desync |
+| `baseline_fps` | fps | 30 | Playback speed |
+| `fade_zone` | frames | 60 | Reference (actual crossfade is 30 frames) |
+| `invert_mode` | invert | 0/1 | **0** = min blend + white bg, **1** = max blend + black bg |
 
-## Timeline Index Expression
+## Image Sequence Source
 
-Each `timeline0`…`timeline4` has:
+Currently using pre-rendered frames:
+```
+/Users/CONWARD/dev/bas/PyBas3/pre_render/outputs/runside_megaslow_compressed_720p_blend_output/chroma_dithered/frame_XXXX.png
+```
+
+- 600 frames, 720×1280
+- **File path is an expression** - dynamically loads correct frame each cook
+
+Available sequences in same directory:
+- `raw_frames/` - original video frames
+- `chroma_dithered/` - dithered chroma key (current)
+- `chroma_atkinson/` - Atkinson dithered
+- `chroma_keyed/` - clean chroma key
+- `composite_skeleton_dithered/` - skeleton overlay
+
+## Timing Cycle (20 seconds)
 
 ```
-index.expr = int(absTime.seconds * baseline_fps + mult * spread * desync_mod['desync']) % 4585
+0-5s:   SYNC     desync=0, all timelines same frame
+5-15s:  DESYNC   desync ramps 0→1→0 (cosine), timelines spread ±65 frames
+15-20s: SYNC     desync=0, all timelines converge
 ```
 
-`mult` is `-1, -0.5, 0, 0.5, 1` for timeline0…4. `4585` = frame count of the source video.
+## Key Expressions
 
-## Desync Modulator (`desync_mod_callbacks`)
+### Desync Value (`desync_val`)
+```python
+(0.5 - 0.5 * math.cos(((absTime.seconds % 20) - 5) / 10 * 6.28318)) if (5 <= (absTime.seconds % 20) < 15) else 0
+```
 
-Script CHOP callback:
+### Timeline File Path (expression on `file` parameter)
+```python
+'/path/to/frames/frame_' + str(int(absTime.seconds * 30 + MULT * 65 * op('/project1/desync/desync_val')['desync']) % 600).zfill(4) + '.png'
+```
 
-- Cycle length = `2 * sync_hold + desync_duration` (e.g. 3+8+3 = 14s).
-- In first and last `sync_hold` seconds: `desync = 0` (all timelines in sync).
-- In the middle `desync_duration`: triangle 0→1→0, then S-curve (smoothstep) so desync ramps smoothly.
+### Cross Blend (ramps 0→1 in final 30 frames)
+```python
+max(0, (frame_index % 600 - (600 - 30)) / 30)
+```
 
-## Red Tint
+## Cross Dissolve (Seamless Loop)
 
-`red_tint_level` (Level TOP): `highr=1`, `highg=0`, `highb=0` (and lows 0) so the composite (luminance) becomes red-only. No separate “gain” params; Level TOP uses output range.
+- `wrap0/2/4`: show frames +30 ahead (via file expression)
+- `cross0/2/4`: blend timeline↔wrap
+- Blend ramps from 0 to 1 in final 30 frames before loop
+- Chain: `timeline + wrap → cross → mono → composites`
 
-## Video Source
+## Blend Mode Toggle (`invert_mode`)
 
-- Path: `input_videos/runside-megaslow-compressed.mp4` (or full path in repo).
-- Frame count: **4585** (hardcoded in index expression; change if you switch clip).
+| Value | Blend | Background | Use For |
+|-------|-------|------------|---------|
+| 0 | minimum | white | black figure on white |
+| 1 | maximum | black | white figure on black |
 
-## Recreating From Scratch
+Composite operand and background color are expressions referencing `invert_mode`.
 
-1. Open TouchDesigner, create or open a project with `project1`.
-2. Run the setup script in Textport:
-   ```python
-   exec(open('/Users/CONWARD/dev/bas/PyBas3/td_scripts/desync_setup.py').read())
-   ```
-3. Or use TouchDesigner MCP: create nodes and wire as above; run the same organization script for layout.
-4. **Save the .toe** (File → Save). MCP cannot save the file; save manually after changes.
+## Performance
 
-## Files in Repo
+- **Image sequences** instead of video = instant random access
+- No H.264 seeking overhead
+- 6 moviefileinTOPs total (3 timeline + 3 wrap)
+- Smooth 30+ FPS on M1 Mac
+
+## Files
 
 | File | Purpose |
 |------|---------|
-| `PyBas3/td_scripts/ConnerTD/Desync.toe` | TouchDesigner project (save here after editing) |
-| `PyBas3/td_scripts/desync_setup.py` | Python script to create/wire Desync network in TD |
-| `PyBas3/td_scripts/ConnerTD/DESYNC.md` | This documentation |
+| `Desync.toe` | TouchDesigner project |
+| `DESYNC.md` | This documentation |
 
-## Node Layout (Approximate)
+## Changing Image Sequence
 
-- **Left**: Controls (sync_hold, desync_duration, spread, baseline_fps), then desync_mod_callbacks, desync_mod.
-- **Center-left**: timeline0…4 (stacked).
-- **Center**: level0…4, background (stacked).
-- **Center-right**: composite `out`.
-- **Right**: red_tint_level, post_mono; outputs out_color, out_mono in project1.
+To switch sequences, update the `SEQ_BASE` path in timeline and wrap file expressions:
 
-Layout is applied by the organization script (nodeCenterX/nodeCenterY). Run it again from MCP or Textport if you add nodes or move things.
+```python
+# In TD Python or via MCP:
+SEQ_BASE = '/path/to/new/sequence/frame_'
+for i in [0, 2, 4]:
+    t = op('/project1/desync/timeline' + str(i))
+    # ... update t.par.file.expr with new SEQ_BASE
+```
+
+Also update `VIDEO_LENGTH` if frame count differs.

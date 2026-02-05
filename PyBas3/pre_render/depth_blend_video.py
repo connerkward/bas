@@ -652,6 +652,82 @@ def create_chronophotography(depth_images: list[np.ndarray], mode: str = "lighte
         return depth_images[0]
 
 
+def _chrono_from_video(video_path: str, out_path: str, n_poses: int, blend: str = "lighten", to_grayscale: bool = False) -> bool:
+    """Subsample video to n_poses frames, blend (lighten or long_exposure), save. Returns True if saved."""
+    cap = cv2.VideoCapture(video_path)
+    n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    if n < 1:
+        cap.release()
+        return False
+    indices = np.linspace(0, n - 1, min(n_poses, n), dtype=int)
+    frames = []
+    for i in indices:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, i)
+        ret, f = cap.read()
+        if ret and f is not None:
+            if to_grayscale:
+                f = cv2.cvtColor(f, cv2.COLOR_BGR2GRAY)
+                if len(f.shape) == 2:
+                    f = cv2.cvtColor(f, cv2.COLOR_GRAY2BGR)
+            frames.append(f)
+    cap.release()
+    if not frames:
+        return False
+    if blend == "long_exposure":
+        out = np.zeros_like(frames[0], dtype=np.float32)
+        for f in frames:
+            out += f.astype(np.float32)
+        out = out / len(frames)
+        # Normalize to full range so result isn't dim
+        lo, hi = out.min(), out.max()
+        if hi > lo:
+            out = (out - lo) / (hi - lo) * 255.0
+    else:
+        out = frames[0].astype(np.float32)
+        for f in frames[1:]:
+            out = np.maximum(out, f.astype(np.float32))
+    out = np.clip(out, 0, 255).astype(np.uint8)
+    if to_grayscale and out.shape[-1] == 3:
+        out = cv2.cvtColor(out, cv2.COLOR_BGR2GRAY)
+    cv2.imwrite(out_path, out)
+    return True
+
+
+def _chrono_from_frame_paths(frame_paths: list, out_path: str, n_poses: int, blend: str = "lighten", to_grayscale: bool = False) -> bool:
+    """Subsample frame list to n_poses, blend, save. Returns True if saved."""
+    if not frame_paths:
+        return False
+    indices = np.linspace(0, len(frame_paths) - 1, min(n_poses, len(frame_paths)), dtype=int)
+    frames = []
+    for i in indices:
+        f = cv2.imread(frame_paths[i])
+        if f is not None:
+            if to_grayscale:
+                f = cv2.cvtColor(f, cv2.COLOR_BGR2GRAY)
+                if len(f.shape) == 2:
+                    f = cv2.cvtColor(f, cv2.COLOR_GRAY2BGR)
+            frames.append(f)
+    if not frames:
+        return False
+    if blend == "long_exposure":
+        out = np.zeros_like(frames[0], dtype=np.float32)
+        for f in frames:
+            out += f.astype(np.float32)
+        out = out / len(frames)
+        lo, hi = out.min(), out.max()
+        if hi > lo:
+            out = (out - lo) / (hi - lo) * 255.0
+    else:
+        out = frames[0].astype(np.float32)
+        for f in frames[1:]:
+            out = np.maximum(out, f.astype(np.float32))
+    out = np.clip(out, 0, 255).astype(np.uint8)
+    if to_grayscale and out.shape[-1] == 3:
+        out = cv2.cvtColor(out, cv2.COLOR_BGR2GRAY)
+    cv2.imwrite(out_path, out)
+    return True
+
+
 BLEND_MODES = ["lighten", "add", "screen", "average", "darken", "lighten_add", "long_exposure", "hero_ghost"]
 
 
@@ -781,7 +857,8 @@ def check_existing_outputs(output_dir: str, effects: list, blend_modes: list) ->
         "chroma_atkinson": "chroma_atkinson", "chroma_dithered": "chroma_dithered",
         "raw_atkinson": "raw_atkinson", "raw_dithered": "raw_dithered",
         "chroma_extract": "chroma_extract", "raw_depth": "depth_maps",
-        "pose_skeleton": "pose_skeleton"
+        "pose_skeleton": "pose_skeleton",
+        "composite_skeleton_dithered": "composite_skeleton_dithered"
     }
     for effect in effects:
         if effect in effect_folders:
@@ -833,7 +910,7 @@ def main():
     parser.add_argument("--effects", type=str, nargs="+", 
                         default=["rainbow_trail", "microres", "lowres", "dithered", "depth", "red_overlay", "atkinson"],
                         choices=["rainbow_trail", "microres", "lowres", "dithered", "depth", "red_overlay", "atkinson", "extract", "bayer", "depth_banding", "chronophoto",
-                                 "chroma_atkinson", "chroma_dithered", "raw_atkinson", "raw_dithered", "chroma_extract", "raw_depth", "pose_skeleton"],
+                                 "chroma_atkinson", "chroma_dithered", "raw_atkinson", "raw_dithered", "chroma_extract", "raw_depth", "pose_skeleton", "composite_skeleton_dithered"],
                         help="Which effects to generate")
     parser.add_argument("--output-dir", type=str, default=None)
     parser.add_argument("--force-greenscreen", action="store_true", help="Force green screen mode")
@@ -1524,6 +1601,144 @@ def main():
                 log("SKELETON", "Copied to %s" % dest)
     elif existing_status['effects'].get('pose_skeleton', False):
         log("RESUME", "Using existing pose_skeleton")
+    
+    # Chronophoto suite: raw_mono, chroma_mono, dithered, skeleton (B&W/mono only for raw/chroma).
+    # Blends: lighten + long_exposure. Frame counts: 4, 8. Matrix per frame count = all 4 types x 2 blends.
+    chrono_dir = os.path.join(args.output_dir, "chronophoto")
+    os.makedirs(chrono_dir, exist_ok=True)
+    CHRONO_FRAME_COUNTS = [3, 4]
+    CHRONO_BLENDS = ["lighten", "long_exposure"]
+    ck_video = os.path.join(videos_dir, "chroma_keyed.mp4")
+    cd_video = os.path.join(videos_dir, "chroma_dithered.mp4")
+    skel_video = os.path.join(videos_dir, "pose_skeleton.mp4")
+    raw_frames_dir = os.path.join(args.output_dir, "raw_frames")
+    skel_frames_dir = os.path.join(args.output_dir, "pose_skeleton", "frames")
+    raw_list = []
+    if os.path.isdir(raw_frames_dir):
+        raw_list = sorted([os.path.join(raw_frames_dir, f) for f in os.listdir(raw_frames_dir) if f.startswith("frame_") and f.endswith(".png")])
+    skel_files = []
+    if os.path.isdir(skel_frames_dir):
+        skel_files = sorted([os.path.join(skel_frames_dir, f) for f in os.listdir(skel_frames_dir) if f.startswith("frame_") and f.endswith(".png")])
+
+    for n_poses in CHRONO_FRAME_COUNTS:
+        for blend in CHRONO_BLENDS:
+            suf = f"{n_poses}_{blend}.png"
+            if raw_list:
+                p = os.path.join(chrono_dir, f"chronophoto_raw_mono_{suf}")
+                if _chrono_from_frame_paths(raw_list, p, n_poses, blend=blend, to_grayscale=True):
+                    pass
+            if os.path.isfile(ck_video):
+                p = os.path.join(chrono_dir, f"chronophoto_chroma_mono_{suf}")
+                if _chrono_from_video(ck_video, p, n_poses, blend=blend, to_grayscale=True):
+                    pass
+            if os.path.isfile(cd_video):
+                p = os.path.join(chrono_dir, f"chronophoto_dithered_{suf}")
+                if _chrono_from_video(cd_video, p, n_poses, blend=blend, to_grayscale=False):
+                    pass
+            if os.path.isfile(skel_video):
+                p = os.path.join(chrono_dir, f"chronophoto_skeleton_{suf}")
+                if _chrono_from_video(skel_video, p, n_poses, blend=blend, to_grayscale=False):
+                    pass
+            elif skel_files:
+                p = os.path.join(chrono_dir, f"chronophoto_skeleton_{suf}")
+                if _chrono_from_frame_paths(skel_files, p, n_poses, blend=blend, to_grayscale=False):
+                    pass
+
+    # Standalone long-exposure versions (few frames = trail not spider)
+    N_LONG_EXP = 5
+    if raw_list:
+        _chrono_from_frame_paths(raw_list, os.path.join(chrono_dir, "chronophoto_raw_mono_long_exposure.png"), N_LONG_EXP, blend="long_exposure", to_grayscale=True)
+    if os.path.isfile(ck_video):
+        _chrono_from_video(ck_video, os.path.join(chrono_dir, "chronophoto_chroma_mono_long_exposure.png"), N_LONG_EXP, blend="long_exposure", to_grayscale=True)
+    if os.path.isfile(cd_video):
+        _chrono_from_video(cd_video, os.path.join(chrono_dir, "chronophoto_dithered_long_exposure.png"), N_LONG_EXP, blend="long_exposure", to_grayscale=False)
+    if os.path.isfile(skel_video):
+        _chrono_from_video(skel_video, os.path.join(chrono_dir, "chronophoto_skeleton_long_exposure.png"), N_LONG_EXP, blend="long_exposure", to_grayscale=False)
+    elif skel_files:
+        _chrono_from_frame_paths(skel_files, os.path.join(chrono_dir, "chronophoto_skeleton_long_exposure.png"), N_LONG_EXP, blend="long_exposure", to_grayscale=False)
+    log("CHRONO", "long_exposure: raw_mono, chroma_mono, dithered, skeleton")
+
+    # Matrix per frame count: 2 rows (lighten, long_exposure) x 4 cols (raw_mono, chroma_mono, dithered, skeleton)
+    type_stems = ["raw_mono", "chroma_mono", "dithered", "skeleton"]
+    for n_poses in CHRONO_FRAME_COUNTS:
+        panels = []
+        for blend in CHRONO_BLENDS:
+            row = []
+            for stem in type_stems:
+                name = f"chronophoto_{stem}_{n_poses}_{blend}.png"
+                path = os.path.join(chrono_dir, name)
+                if os.path.isfile(path):
+                    im = cv2.imread(path)
+                    if im is not None:
+                        if len(im.shape) == 2:
+                            im = cv2.cvtColor(im, cv2.COLOR_GRAY2BGR)
+                        row.append(im)
+            if row:
+                panels.append(row)
+        if panels:
+            h_min = min(im.shape[0] for row in panels for im in row)
+            w_min = min(im.shape[1] for row in panels for im in row)
+            for ri, row in enumerate(panels):
+                for ci, im in enumerate(row):
+                    if im.shape[0] != h_min or im.shape[1] != w_min:
+                        panels[ri][ci] = cv2.resize(im, (w_min, h_min))
+            # Pad rows to 4 cols
+            for ri in range(len(panels)):
+                while len(panels[ri]) < 4:
+                    panels[ri].append(np.zeros((h_min, w_min, 3), dtype=np.uint8))
+            rows_stacked = [np.hstack(panels[ri]) for ri in range(len(panels))]
+            matrix = np.vstack(rows_stacked)
+            matrix_path = os.path.join(chrono_dir, f"chronophoto_matrix_{n_poses}.png")
+            cv2.imwrite(matrix_path, matrix)
+            log("CHRONO", f"chronophoto_matrix_{n_poses}.png (2x4: lighten + long_exposure x raw_mono, chroma_mono, dithered, skeleton)")
+    
+    # Composite: chroma_keyed + pose_skeleton + chroma_dithered (from videos, not frame folders)
+    if "composite_skeleton_dithered" in args.effects and not existing_status['videos'].get('composite_skeleton_dithered', False):
+        ck_video = os.path.join(videos_dir, "chroma_keyed.mp4")
+        cd_video = os.path.join(videos_dir, "chroma_dithered.mp4")
+        skel_video = os.path.join(videos_dir, "pose_skeleton.mp4")
+        if os.path.isfile(ck_video) and os.path.isfile(cd_video) and os.path.isfile(skel_video):
+            cap_ck = cv2.VideoCapture(ck_video)
+            cap_cd = cv2.VideoCapture(cd_video)
+            cap_skel = cv2.VideoCapture(skel_video)
+            n_ck = int(cap_ck.get(cv2.CAP_PROP_FRAME_COUNT))
+            n_cd = int(cap_cd.get(cv2.CAP_PROP_FRAME_COUNT))
+            n_skel = int(cap_skel.get(cv2.CAP_PROP_FRAME_COUNT))
+            n_comp = min(n_ck, n_cd)
+            fps = cap_ck.get(cv2.CAP_PROP_FPS) or args.target_fps
+            w, h = int(cap_ck.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap_ck.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            if n_comp > 0 and w > 0 and h > 0:
+                out_path = os.path.join(videos_dir, "composite_skeleton_dithered.mp4")
+                out_writer = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
+                if out_writer.isOpened():
+                    log("COMPOSITE", "Building from videos (chroma_keyed + pose_skeleton + chroma_dithered)...")
+                    for i in tqdm(range(n_comp), desc="Composite", unit="frame"):
+                        cap_ck.set(cv2.CAP_PROP_POS_FRAMES, i)
+                        cap_cd.set(cv2.CAP_PROP_POS_FRAMES, i)
+                        pose_idx = int(round(i * (n_skel - 1) / max(1, n_comp - 1))) if n_comp > 1 else 0
+                        cap_skel.set(cv2.CAP_PROP_POS_FRAMES, pose_idx)
+                        _, base = cap_ck.read()
+                        _, dith = cap_cd.read()
+                        _, skel = cap_skel.read()
+                        if base is None or dith is None or skel is None:
+                            continue
+                        if skel.shape[:2] != (h, w):
+                            skel = cv2.resize(skel, (w, h))
+                        if dith.shape[:2] != (h, w):
+                            dith = cv2.resize(dith, (w, h))
+                        comp = np.maximum(np.maximum(base, skel), dith)
+                        out_writer.write(comp)
+                    out_writer.release()
+                    log("COMPOSITE", "composite_skeleton_dithered.mp4 done")
+                else:
+                    log("COMPOSITE", "Failed to open video writer")
+            cap_ck.release()
+            cap_cd.release()
+            cap_skel.release()
+        else:
+            log("COMPOSITE", "Skip: chroma_keyed.mp4, chroma_dithered.mp4, or pose_skeleton.mp4 missing")
+    elif existing_status['videos'].get('composite_skeleton_dithered', False):
+        log("RESUME", "Using existing composite_skeleton_dithered.mp4")
     
     log("DONE", f"Output: {args.output_dir}")
 

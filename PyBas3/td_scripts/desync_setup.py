@@ -32,7 +32,7 @@ def setup():
     spread = c.op('spread') or c.create(constantCHOP, 'spread')
     spread.par.length = 1
     spread.par.chans = 1
-    spread.par.vals = [200]
+    spread.par.vals = [500]
     spread.par.name1 = 'frames'
 
     baseline_fps = c.op('baseline_fps') or c.create(constantCHOP, 'baseline_fps')
@@ -81,20 +81,20 @@ def onCook(scriptOp):
         expr = "int(absTime.seconds * op('/project1/desync/baseline_fps')['fps'] + {} * op('/project1/desync/spread')['frames'] * op('/project1/desync/desync_mod')['desync']) % {}".format(mults[i], VIDEO_LENGTH)
         t.par.index.expr = expr
 
-    # --- LEVELS ---
+    # --- MONO (per DESYNC_V2: grayscale for clean min blend) ---
     for i in range(5):
-        lv = c.op('level' + str(i))
-        if not lv:
-            lv = c.create(levelTOP, 'level' + str(i))
-        if not lv.inputConnectors[0].inputs:
-            c.op('timeline' + str(i)).outputConnectors[0].connect(lv.inputConnectors[0])
+        mono = c.op('mono' + str(i))
+        if not mono:
+            mono = c.create(monochromeTOP, 'mono' + str(i))
+        if not mono.inputConnectors[0].inputs:
+            c.op('timeline' + str(i)).outputConnectors[0].connect(mono)
 
     # --- BACKGROUND ---
     bg = c.op('background')
     if not bg:
         bg = c.create(constantTOP, 'background')
-    bg.par.resolutionw = 1920
-    bg.par.resolutionh = 1080
+    bg.par.resolutionw = 720
+    bg.par.resolutionh = 1280
     bg.par.colorr = 1
     bg.par.colorg = 1
     bg.par.colorb = 1
@@ -105,11 +105,11 @@ def onCook(scriptOp):
     if not out_comp:
         out_comp = c.create(compositeTOP, 'out')
     out_comp.par.operand = 'minimum'
-    out_comp.par.top = c.op('level0')
-    out_comp.par.top2 = c.op('level1')
-    out_comp.par.top3 = c.op('level2')
-    out_comp.par.top4 = c.op('level3')
-    out_comp.par.top5 = c.op('level4')
+    out_comp.par.top = c.op('mono0')
+    out_comp.par.top2 = c.op('mono1')
+    out_comp.par.top3 = c.op('mono2')
+    out_comp.par.top4 = c.op('mono3')
+    out_comp.par.top5 = c.op('mono4')
     out_comp.par.top6 = bg
 
     # --- RED TINT ---
