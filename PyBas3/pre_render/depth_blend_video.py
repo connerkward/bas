@@ -6,6 +6,8 @@ Supports both green screen and regular videos with auto-detection.
 
 import argparse
 import os
+import sys
+from datetime import date
 import cv2
 import numpy as np
 import torch
@@ -16,6 +18,7 @@ import time
 from tqdm import tqdm
 import json
 import pickle
+import subprocess
 
 
 def log(step: str, detail: str = "", frame: int = None, total: int = None):
@@ -462,7 +465,7 @@ def process_frame_for_output(frame: np.ndarray, has_greenscreen: bool, chroma_pa
 
 
 def extract_frames(video_path: str, num_frames: int, output_dir: str, 
-                   target_fps: float = None, has_greenscreen: bool = False, 
+                   target_fps: float = None, max_frames: int = None, has_greenscreen: bool = False, 
                    chroma_params: dict = None) -> list[str]:
     """Extract evenly spaced frames from video, saving raw and chroma-keyed frames."""
     # Create folders: raw_frames and chroma_keyed (no separate frames folder)
@@ -491,6 +494,9 @@ def extract_frames(video_path: str, num_frames: int, output_dir: str,
     if target_fps is not None:
         num_frames = int(duration * target_fps)
         log("EXTRACT", f"Duration: {duration:.2f}s @ {target_fps}fps = {num_frames} frames")
+    if max_frames is not None and num_frames > max_frames:
+        num_frames = max_frames
+        log("EXTRACT", f"Capped to {num_frames} frames (--max-frames)")
     
     frame_indices = np.linspace(0, total_frames - 1, num_frames, dtype=int)
     frame_paths = []
@@ -650,6 +656,38 @@ def create_chronophotography(depth_images: list[np.ndarray], mode: str = "lighte
 BLEND_MODES = ["lighten", "add", "screen", "average", "darken", "lighten_add", "long_exposure", "hero_ghost"]
 
 
+def _atkinson_dither_core(gray: np.ndarray) -> np.ndarray:
+    """Atkinson dither in-place on float32 array. JIT-compiled for speed."""
+    h, w = gray.shape
+    for y in range(h):
+        for x in range(w):
+            old_pixel = gray[y, x]
+            new_pixel = 255.0 if old_pixel > 127.0 else 0.0
+            gray[y, x] = new_pixel
+            error = (old_pixel - new_pixel) / 8.0
+            if x + 1 < w:
+                gray[y, x + 1] += error
+            if x + 2 < w:
+                gray[y, x + 2] += error
+            if y + 1 < h:
+                if x > 0:
+                    gray[y + 1, x - 1] += error
+                gray[y + 1, x] += error
+                if x + 1 < w:
+                    gray[y + 1, x + 1] += error
+            if y + 2 < h:
+                gray[y + 2, x] += error
+    return gray
+
+
+try:
+    from numba import njit
+    _atkinson_dither_jit = njit(cache=True)(_atkinson_dither_core)
+    _atkinson_dither = _atkinson_dither_jit
+except Exception:
+    _atkinson_dither = _atkinson_dither_core
+
+
 def process_dither_frame(args):
     """Thread worker for dithering."""
     idx, frame_path, output_dir, dither_type = args
@@ -666,20 +704,8 @@ def process_dither_frame(args):
         result = np.array(dithered.convert('L'))
     
     elif dither_type == "atkinson":
-        gray_f = gray.astype(np.float32)
-        for y in range(h):
-            for x in range(w):
-                old_pixel = gray_f[y, x]
-                new_pixel = 255.0 if old_pixel > 127 else 0.0
-                gray_f[y, x] = new_pixel
-                error = (old_pixel - new_pixel) / 8.0
-                if x + 1 < w: gray_f[y, x + 1] += error
-                if x + 2 < w: gray_f[y, x + 2] += error
-                if y + 1 < h:
-                    if x > 0: gray_f[y + 1, x - 1] += error
-                    gray_f[y + 1, x] += error
-                    if x + 1 < w: gray_f[y + 1, x + 1] += error
-                if y + 2 < h: gray_f[y + 2, x] += error
+        gray_f = np.ascontiguousarray(gray.astype(np.float32))
+        _atkinson_dither(gray_f)
         result = np.clip(gray_f, 0, 255).astype(np.uint8)
     
     elif dither_type == "bayer":
@@ -752,12 +778,19 @@ def check_existing_outputs(output_dir: str, effects: list, blend_modes: list) ->
         "dithered": "dithered", "atkinson": "atkinson", "bayer": "bayer",
         "extract": "extract", "lowres": "lowres", "microres": "microres",
         "red_overlay": "red_overlay", "rainbow_trail": "rainbow_trail",
-        "depth_banding": "depth_banding", "chronophoto": "chronophoto"
+        "depth_banding": "depth_banding", "chronophoto": "chronophoto",
+        "chroma_atkinson": "chroma_atkinson", "chroma_dithered": "chroma_dithered",
+        "raw_atkinson": "raw_atkinson", "raw_dithered": "raw_dithered",
+        "chroma_extract": "chroma_extract", "raw_depth": "depth_maps",
+        "pose_skeleton": "pose_skeleton"
     }
     for effect in effects:
         if effect in effect_folders:
             folder = os.path.join(output_dir, effect_folders[effect])
-            if os.path.exists(folder):
+            if effect == "pose_skeleton":
+                frames_sub = os.path.join(folder, "frames")
+                status['effects'][effect] = os.path.exists(frames_sub) and any(f.startswith("frame_") and f.endswith(".png") for f in os.listdir(frames_sub))
+            elif os.path.exists(folder):
                 existing = [f for f in os.listdir(folder) if f.startswith("frame_") and f.endswith(".png")]
                 status['effects'][effect] = len(existing) > 0
     
@@ -800,20 +833,23 @@ def main():
     parser.add_argument("--alpha", type=float, default=0.5)
     parser.add_argument("--effects", type=str, nargs="+", 
                         default=["rainbow_trail", "microres", "lowres", "dithered", "depth", "red_overlay", "atkinson"],
-                        choices=["rainbow_trail", "microres", "lowres", "dithered", "depth", "red_overlay", "atkinson", "extract", "bayer", "depth_banding", "chronophoto"],
+                        choices=["rainbow_trail", "microres", "lowres", "dithered", "depth", "red_overlay", "atkinson", "extract", "bayer", "depth_banding", "chronophoto",
+                                 "chroma_atkinson", "chroma_dithered", "raw_atkinson", "raw_dithered", "chroma_extract", "raw_depth", "pose_skeleton"],
                         help="Which effects to generate")
     parser.add_argument("--output-dir", type=str, default=None)
     parser.add_argument("--force-greenscreen", action="store_true", help="Force green screen mode")
     parser.add_argument("--force-no-greenscreen", action="store_true", help="Force regular video mode")
     parser.add_argument("--workers", type=int, default=4, help="Number of worker threads")
     parser.add_argument("--batch-size", type=int, default=4, help="Batch size for depth estimation")
+    parser.add_argument("--max-frames", type=int, default=None, help="Cap extracted frame count (for long videos)")
     
     args = parser.parse_args()
     
-    # Generate output dir from video filename, defaulting under pre_render/outputs
+    # Generate output dir: pre_render/outputs/<YYYY-MM-DD>/<video_basename>_blend_output
     if args.output_dir is None:
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        default_root = os.path.join(script_dir, "outputs")
+        date_str = date.today().isoformat()
+        default_root = os.path.join(script_dir, "outputs", date_str)
         os.makedirs(default_root, exist_ok=True)
         video_basename = os.path.splitext(os.path.basename(args.video_path))[0]
         args.output_dir = os.path.join(default_root, f"{video_basename}_blend_output")
@@ -878,13 +914,20 @@ def main():
     raw_frames_dir = os.path.join(args.output_dir, "raw_frames")
     if not existing_status['frames']:
         log("EXTRACT", f"Starting @ {args.target_fps}fps...")
-        frame_paths = extract_frames(args.video_path, args.num_frames, chroma_keyed_dir, 
-                                      target_fps=args.target_fps, has_greenscreen=has_greenscreen,
-                                      chroma_params=chroma_params)
+        frame_paths = extract_frames(args.video_path, args.num_frames, args.output_dir,
+                                      target_fps=args.target_fps, max_frames=args.max_frames,
+                                      has_greenscreen=has_greenscreen, chroma_params=chroma_params)
     else:
         log("RESUME", "Using existing frames")
         existing_frames = sorted([f for f in os.listdir(chroma_keyed_dir) if f.startswith("frame_") and f.endswith(".png")])
         frame_paths = [os.path.join(chroma_keyed_dir, f) for f in existing_frames]
+    
+    # Raw frame paths (same indices as chroma) for raw_* effects
+    raw_frame_paths = []
+    if os.path.exists(raw_frames_dir):
+        n = len(frame_paths)
+        raw_frame_paths = [os.path.join(raw_frames_dir, f"frame_{i:04d}.png") for i in range(n)]
+        raw_frame_paths = [p for p in raw_frame_paths if os.path.exists(p)]
     
     # Create video for chroma_keyed frames (synchronous, not background)
     videos_dir = os.path.join(args.output_dir, "videos")
@@ -908,7 +951,7 @@ def main():
     log("STATS", f"Frame brightness: mean={frame_stats[0]:.1f}, std={frame_stats[1]:.1f}")
     
     # Load Depth Anything V2 (only if needed)
-    needs_depth = "depth" in args.effects or "depth_banding" in args.effects or args.blend_modes
+    needs_depth = "depth" in args.effects or "raw_depth" in args.effects or "depth_banding" in args.effects or args.blend_modes
     pipe = None
     if needs_depth:
         log("MODEL", f"Loading {args.model}...")
@@ -920,44 +963,7 @@ def main():
     for mode in args.blend_modes:
         os.makedirs(os.path.join(args.output_dir, mode), exist_ok=True)
     
-    # Interactive depth tuning (before processing all frames)
-    if needs_depth and "depth" in args.effects and depth_params is None and not existing_status['depth_maps']:
-        log("TUNING", "Opening interactive depth tuning...")
-        # Process one sample frame for tuning (use raw frame)
-        raw_frame_files = sorted([f for f in os.listdir(raw_frames_dir) if f.startswith("frame_") and f.endswith(".png")])
-        sample_frame_path = os.path.join(raw_frames_dir, raw_frame_files[len(raw_frame_files) // 2])  # Middle frame
-        sample_frame = cv2.imread(sample_frame_path)
-        sample_image = Image.open(sample_frame_path)
-        sample_result = pipe([sample_image])[0]
-        sample_depth_array = np.array(sample_result["depth"])
-        depth_min, depth_max = sample_depth_array.min(), sample_depth_array.max()
-        if depth_max > depth_min:
-            depth_norm = (sample_depth_array - depth_min) / (depth_max - depth_min)
-        else:
-            depth_norm = np.zeros_like(sample_depth_array, dtype=np.float32)
-        sample_depth_gray = (depth_norm * 255).astype(np.uint8)
-        
-        depth_params = interactive_depth_tuning(sample_depth_gray, sample_frame, has_greenscreen, chroma_params)
-        if depth_params:
-            # Save parameters
-            if not os.path.exists(params_file):
-                saved_params = {}
-            else:
-                with open(params_file, 'r') as f:
-                    saved_params = json.load(f)
-            saved_params['depth'] = depth_params
-            with open(params_file, 'w') as f:
-                json.dump(saved_params, f, indent=2)
-            log("PARAMS", "Depth parameters saved")
-        else:
-            # Use defaults
-            depth_params = {
-                'percentile_low': 40,
-                'percentile_high': 70,
-                'background_scale': 0.3,
-                'mask_erode': 0,
-                'mask_dilate': 0
-            }
+    # Skip interactive depth tuning - use auto/defaults
     
     # Use default depth params if not set
     if depth_params is None:
@@ -969,42 +975,34 @@ def main():
             'mask_dilate': 0
         }
     
+    # Depth input: raw frames when raw_depth requested (and available), else chroma
+    depth_frame_paths = frame_paths
+    if "raw_depth" in args.effects and raw_frame_paths and len(raw_frame_paths) == len(frame_paths):
+        depth_frame_paths = raw_frame_paths
+        log("DEPTH", "Using raw frames for depth estimation (raw_depth)")
+    
     # Define function to run depth estimation
     def run_depth_estimation():
         """Run depth estimation and return depth_images list."""
         depth_imgs = []
         if not existing_status['depth_maps']:
-            # Get raw frame paths (use raw frames for depth estimation)
-            raw_frame_files = sorted([f for f in os.listdir(raw_frames_dir) if f.startswith("frame_") and f.endswith(".png")])
-            raw_frame_paths = [os.path.join(raw_frames_dir, f) for f in raw_frame_files]
-            
-            log("DEPTH", f"Running depth estimation on {len(raw_frame_paths)} raw frames...")
+            log("DEPTH", f"Running depth estimation on {len(depth_frame_paths)} frames...")
             
             # Process in batches
-            num_batches = (len(raw_frame_paths) + args.batch_size - 1) // args.batch_size
-            with tqdm(total=len(raw_frame_paths), desc="Depth estimation", unit="frame") as pbar:
-                for batch_start in range(0, len(raw_frame_paths), args.batch_size):
-                    batch_end = min(batch_start + args.batch_size, len(raw_frame_paths))
-                    batch_paths = raw_frame_paths[batch_start:batch_end]
+            with tqdm(total=len(depth_frame_paths), desc="Depth estimation", unit="frame") as pbar:
+                for batch_start in range(0, len(depth_frame_paths), args.batch_size):
+                    batch_end = min(batch_start + args.batch_size, len(depth_frame_paths))
+                    batch_paths = depth_frame_paths[batch_start:batch_end]
                     
-                    # Load batch images (use raw frames for depth estimation)
                     batch_images = [Image.open(p) for p in batch_paths]
                     
                     # Run depth on batch
                     results = pipe(batch_images)
                     
-                    for i, (result, raw_frame_path) in enumerate(zip(results, batch_paths)):
+                    for i, result in enumerate(results):
                         idx = batch_start + i
                         depth_map = result["depth"]
                         depth_array = np.array(depth_map)
-                        
-                        # Get subject mask from raw frame
-                        orig_frame = cv2.imread(raw_frame_path)
-                        fg_mask = extract_subject_mask(orig_frame, has_greenscreen, chroma_params)
-                        
-                        # Resize mask if needed
-                        if fg_mask.shape != depth_array.shape:
-                            fg_mask = cv2.resize(fg_mask, (depth_array.shape[1], depth_array.shape[0]))
                         
                         # Normalize depth
                         depth_min, depth_max = depth_array.min(), depth_array.max()
@@ -1014,20 +1012,6 @@ def main():
                             depth_norm = np.zeros_like(depth_array, dtype=np.float32)
                         
                         depth_gray = (depth_norm * 255).astype(np.uint8)
-                        
-                        # Apply subject mask with tuned parameters
-                        if has_greenscreen:
-                            depth_gray = cv2.bitwise_and(depth_gray, depth_gray, mask=fg_mask)
-                        else:
-                            depth_percentile_high = np.percentile(depth_gray, depth_params['percentile_high'])
-                            depth_percentile_low = np.percentile(depth_gray, depth_params['percentile_low'])
-                            depth_float = depth_gray.astype(np.float32)
-                            soft_mask = np.clip(
-                                (depth_float - depth_percentile_low) / (depth_percentile_high - depth_percentile_low + 1e-6),
-                                0.0, 1.0
-                            )
-                            depth_gray = (depth_float * (depth_params['background_scale'] + (1 - depth_params['background_scale']) * soft_mask)).astype(np.uint8)
-                        
                         depth_imgs.append(depth_gray)
                         
                         path = os.path.join(depth_maps_dir, f"depth_{idx:04d}.png")
@@ -1036,12 +1020,6 @@ def main():
                     pbar.update(len(batch_paths))
             
             log("DEPTH", f"Done - {len(depth_imgs)} depth maps")
-            
-            # Create depth chronophoto
-            depth_chrono = create_chronophotography(depth_imgs, "lighten_add")
-            path = os.path.join(depth_maps_dir, "chronophoto.png")
-            Image.fromarray(depth_chrono, mode='L').save(path)
-            log("CHRONO", "Created depth chronophoto")
         else:
             log("RESUME", "Loading existing depth maps...")
             existing_depths = sorted([f for f in os.listdir(depth_maps_dir) if f.startswith("depth_") and f.endswith(".png")])
@@ -1055,7 +1033,7 @@ def main():
         return depth_imgs
     
     # Check if depth is needed for any effects
-    needs_depth = "depth" in args.effects or "depth_banding" in args.effects or args.blend_modes
+    needs_depth = "depth" in args.effects or "raw_depth" in args.effects or "depth_banding" in args.effects or args.blend_modes
     
     # Run depth estimation - will be used in parallel with independent effects
     depth_images = []
@@ -1080,20 +1058,11 @@ def main():
     else:
         log("SKIP", "Skipping depth estimation (not needed for requested effects)")
     
-    # Create video for depth_maps (synchronous)
-    if "depth" in args.effects and not existing_status['videos'].get('depth_maps', False):
-        log("VIDEO", "Creating depth_maps.mp4...")
-        create_video_from_folder(depth_maps_dir, "depth_maps", videos_dir, args.target_fps)
-    elif existing_status['videos'].get('depth_maps', False):
-        log("RESUME", "depth_maps.mp4 already exists")
-    
-    # Only require depth images if depth-related effects are needed
-    needs_depth = "depth" in args.effects or "depth_banding" in args.effects or args.blend_modes
-    if needs_depth and not depth_images:
-        raise RuntimeError("Depth images not available but required for requested effects")
+    # Note: depth_maps video will be created after depth estimation completes (see below)
     
     # Resize depths to common size (only if we have depth images)
     resized_depths = []
+    target_shape = None
     if depth_images:
         target_shape = depth_images[0].shape
         for img in depth_images:
@@ -1112,22 +1081,29 @@ def main():
                 continue
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             frame = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
-            if target_shape and frame.shape[:2] != target_shape:
+            if target_shape is not None and frame.shape[:2] != target_shape:
                 frame = cv2.resize(frame, (target_shape[1], target_shape[0]))
             original_frames.append(frame)
     
-    # Chronophoto pass - ghostly composite of raw frames (not depth maps)
-    # Runs after frames are loaded, parallelized by blend mode
+    # Chronophoto pass - Marey-style from raw monochromed frames (not depth maps)
     if "chronophoto" in args.effects:
-        log("CHRONO", "Creating chronophoto pass (ghostly composite of raw frames)...")
+        log("CHRONO", "Creating chronophoto pass (Marey-style from raw frames)...")
         chrono_dir = os.path.join(args.output_dir, "chronophoto")
         os.makedirs(chrono_dir, exist_ok=True)
-        
-        if not original_frames:
+        # Prefer raw_frames for Marey look; fallback to chroma_keyed
+        chrono_paths = raw_frame_paths if (raw_frame_paths and len(raw_frame_paths) == len(frame_paths)) else frame_paths
+        chrono_frames = []
+        for p in chrono_paths:
+            f = cv2.imread(p)
+            if f is None:
+                continue
+            if target_shape is not None and f.shape[:2] != target_shape:
+                f = cv2.resize(f, (target_shape[1], target_shape[0]))
+            chrono_frames.append(f)
+        gray_frames = [cv2.cvtColor(f, cv2.COLOR_BGR2GRAY) for f in chrono_frames]
+        if not gray_frames:
             log("CHRONO", "No frames available, skipping chronophoto pass")
         else:
-            # Convert frames to grayscale for chronophotography
-            gray_frames = [cv2.cvtColor(f, cv2.COLOR_BGR2GRAY) for f in original_frames]
             
             # Blend modes for chronophoto pass
             chrono_modes = ["long_exposure", "hero_ghost", "lighten_add"]
@@ -1192,6 +1168,13 @@ def main():
         depth_images = depth_future.result()
         depth_executor.shutdown(wait=True)
     
+    # Create video for depth_maps (after depth estimation completes)
+    if ("depth" in args.effects or "raw_depth" in args.effects) and depth_images and not existing_status['videos'].get('depth_maps', False):
+        log("VIDEO", "Creating depth_maps.mp4...")
+        create_video_from_folder(depth_maps_dir, "depth_maps", videos_dir, args.target_fps)
+    elif existing_status['videos'].get('depth_maps', False):
+        log("RESUME", "depth_maps.mp4 already exists")
+    
     if "atkinson" in args.effects and not existing_status['effects'].get('atkinson', False):
         log("DITHER", "Creating Atkinson dithered frames...")
         atkinson_dir = os.path.join(args.output_dir, "atkinson")
@@ -1209,6 +1192,53 @@ def main():
             log("RESUME", "atkinson.mp4 already exists")
     elif existing_status['effects'].get('atkinson', False):
         log("RESUME", "Using existing atkinson frames")
+    
+    # Chroma / raw named variants
+    if "chroma_dithered" in args.effects and not existing_status['effects'].get('chroma_dithered', False):
+        log("DITHER", "Creating chroma_dithered frames...")
+        out_dir = os.path.join(args.output_dir, "chroma_dithered")
+        os.makedirs(out_dir, exist_ok=True)
+        with ThreadPoolExecutor(max_workers=args.workers) as executor:
+            args_list = [(i, p, out_dir, "floyd") for i, p in enumerate(frame_paths)]
+            list(tqdm(executor.map(process_dither_frame, args_list), total=len(args_list), desc="Chroma dithered", unit="frame"))
+        if not existing_status['videos'].get('chroma_dithered', False):
+            create_video_from_folder(out_dir, "chroma_dithered", videos_dir, args.target_fps)
+    if "chroma_atkinson" in args.effects and not existing_status['effects'].get('chroma_atkinson', False):
+        log("DITHER", "Creating chroma_atkinson frames...")
+        out_dir = os.path.join(args.output_dir, "chroma_atkinson")
+        os.makedirs(out_dir, exist_ok=True)
+        with ThreadPoolExecutor(max_workers=args.workers) as executor:
+            args_list = [(i, p, out_dir, "atkinson") for i, p in enumerate(frame_paths)]
+            list(tqdm(executor.map(process_dither_frame, args_list), total=len(args_list), desc="Chroma atkinson", unit="frame"))
+        if not existing_status['videos'].get('chroma_atkinson', False):
+            create_video_from_folder(out_dir, "chroma_atkinson", videos_dir, args.target_fps)
+    if "raw_dithered" in args.effects and raw_frame_paths and not existing_status['effects'].get('raw_dithered', False):
+        log("DITHER", "Creating raw_dithered frames...")
+        out_dir = os.path.join(args.output_dir, "raw_dithered")
+        os.makedirs(out_dir, exist_ok=True)
+        with ThreadPoolExecutor(max_workers=args.workers) as executor:
+            args_list = [(i, p, out_dir, "floyd") for i, p in enumerate(raw_frame_paths)]
+            list(tqdm(executor.map(process_dither_frame, args_list), total=len(args_list), desc="Raw dithered", unit="frame"))
+        if not existing_status['videos'].get('raw_dithered', False):
+            create_video_from_folder(out_dir, "raw_dithered", videos_dir, args.target_fps)
+    if "raw_atkinson" in args.effects and raw_frame_paths and not existing_status['effects'].get('raw_atkinson', False):
+        log("DITHER", "Creating raw_atkinson frames...")
+        out_dir = os.path.join(args.output_dir, "raw_atkinson")
+        os.makedirs(out_dir, exist_ok=True)
+        with ThreadPoolExecutor(max_workers=args.workers) as executor:
+            args_list = [(i, p, out_dir, "atkinson") for i, p in enumerate(raw_frame_paths)]
+            list(tqdm(executor.map(process_dither_frame, args_list), total=len(args_list), desc="Raw atkinson", unit="frame"))
+        if not existing_status['videos'].get('raw_atkinson', False):
+            create_video_from_folder(out_dir, "raw_atkinson", videos_dir, args.target_fps)
+    if "chroma_extract" in args.effects and not existing_status['effects'].get('chroma_extract', False):
+        log("PIXEL", "Creating chroma_extract frames...")
+        out_dir = os.path.join(args.output_dir, "chroma_extract")
+        os.makedirs(out_dir, exist_ok=True)
+        with ThreadPoolExecutor(max_workers=args.workers) as executor:
+            args_list = [(i, p, out_dir, 8, frame_stats) for i, p in enumerate(frame_paths)]
+            list(tqdm(executor.map(process_pixel_frame, args_list), total=len(args_list), desc="Chroma extract", unit="frame"))
+        if not existing_status['videos'].get('chroma_extract', False):
+            create_video_from_folder(out_dir, "chroma_extract", videos_dir, args.target_fps)
     
     if "bayer" in args.effects and not existing_status['effects'].get('bayer', False):
         log("DITHER", "Creating Bayer dithered frames...")
@@ -1410,20 +1440,21 @@ def main():
             else:
                 depth = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             
-            result = np.zeros((h, w), dtype=np.uint8)
+            depth_thresh, _ = cv2.threshold(depth, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            subject_mask = depth > depth_thresh
             
-            for y in range(h):
-                for x in range(w):
-                    d = depth[y, x]
-                    if d < 10:
-                        continue
-                    line_spacing = max(2, int(20 - d / 15))
-                    wave = int(np.sin(y * 0.1 + d * 0.05) * 3)
-                    if (y + wave) % line_spacing < 2:
-                        result[y, x] = 255
+            masked_depth = np.where(subject_mask, depth, 0).astype(np.uint8)
+            clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+            enhanced = clahe.apply(masked_depth)
+            smoothed = cv2.GaussianBlur(enhanced, (3, 3), 0)
             
-            noise_mask = np.random.random((h, w)) < (depth.astype(np.float32) / 255.0 * 0.1)
-            result = np.where(noise_mask, 255, result).astype(np.uint8)
+            num_bands = 12  # Fewer bands = distinct internal contours
+            quantized = (smoothed.astype(np.float32) / 255.0 * num_bands).astype(np.uint8)
+            quantized = (quantized * (255 // max(1, num_bands))).astype(np.uint8)
+            edges = cv2.Canny(quantized, 15, 60)
+            kernel = np.ones((2, 2), np.uint8)
+            edges = cv2.dilate(edges, kernel, iterations=1)
+            result = np.where(subject_mask, edges, 0).astype(np.uint8)
             Image.fromarray(result, mode='L').save(os.path.join(banding_dir, f"frame_{idx:04d}.png"))
         log("EFFECT", "Depth banding done")
         
@@ -1479,6 +1510,31 @@ def main():
                 log("RESUME", f"Using existing {mode} frames")
     elif args.blend_modes and not resized_depths:
         log("SKIP", "Skipping blend modes - depth maps not available")
+    
+    # Pose skeleton (MediaPipe) - runs on full video
+    if "pose_skeleton" in args.effects and not existing_status['effects'].get('pose_skeleton', False):
+        log("SKELETON", "Running pose skeleton (MediaPipe)...")
+        skeleton_out = os.path.join(args.output_dir, "pose_skeleton")
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        skeleton_script = os.path.join(script_dir, "pose_skeleton_render.py")
+        video_abs = os.path.abspath(args.video_path)
+        if not os.path.isfile(video_abs):
+            # Try relative to repo root (parent of PyBas3)
+            base = os.path.dirname(os.path.dirname(script_dir))
+            video_abs = os.path.abspath(os.path.join(base, args.video_path))
+        cmd = [sys.executable, skeleton_script, video_abs, "--output-dir", skeleton_out, "--fps", str(args.target_fps)]
+        r = subprocess.run(cmd)
+        if r.returncode != 0:
+            log("SKELETON", "pose_skeleton_render.py exited with code %s" % r.returncode)
+        else:
+            skel_video = os.path.join(skeleton_out, "videos", "skeleton.mp4")
+            if os.path.exists(skel_video):
+                import shutil
+                dest = os.path.join(videos_dir, "pose_skeleton.mp4")
+                shutil.copy2(skel_video, dest)
+                log("SKELETON", "Copied to %s" % dest)
+    elif existing_status['effects'].get('pose_skeleton', False):
+        log("RESUME", "Using existing pose_skeleton")
     
     log("DONE", f"Output: {args.output_dir}")
 
