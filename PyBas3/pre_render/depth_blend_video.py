@@ -652,6 +652,71 @@ def create_chronophotography(depth_images: list[np.ndarray], mode: str = "lighte
         return depth_images[0]
 
 
+# Veo text at 720p: (660,1245)-(703,1262). Scale for 1080p etc.
+_VEO_REF_WIDTH = 720
+_VEO_REF_HEIGHT = 1280
+_VEO_BOX_X1_REF = 660
+_VEO_BOX_Y1_REF = 1245
+_VEO_BOX_W_REF = 43     # 703-660
+_VEO_BOX_H_REF = 17     # 1262-1245
+_VEO_FEATHER_REF = 10   # feather margin in px at 720p
+
+
+def _blur_watermark_region(img: np.ndarray) -> np.ndarray:
+    """Blur Veo watermark with feathered edges. Coords from 720p, scaled for other resolutions."""
+    h, w = img.shape[:2]
+    sw = w / _VEO_REF_WIDTH
+    sh = h / _VEO_REF_HEIGHT
+    # Scale box coords
+    bx1 = int(round(_VEO_BOX_X1_REF * sw))
+    by1 = int(round(_VEO_BOX_Y1_REF * sh))
+    bw = int(round(_VEO_BOX_W_REF * sw))
+    bh = int(round(_VEO_BOX_H_REF * sh))
+    margin = int(round(_VEO_FEATHER_REF * max(sw, sh)))
+    # Patch region = box + feather margin, clamped to frame
+    x0 = max(0, bx1 - margin)
+    y0 = max(0, by1 - margin)
+    x1 = min(w, bx1 + bw + margin)
+    y1 = min(h, by1 + bh + margin)
+    pw, ph = x1 - x0, y1 - y0
+    if pw < 4 or ph < 4:
+        return img
+    roi = img[y0:y1, x0:x1].astype(np.float32)
+    # Strong blur: apply twice for heavier smear
+    k = max(15, min(51, pw - 1, ph - 1))
+    if k % 2 == 0:
+        k -= 1
+    blurred = cv2.GaussianBlur(roi, (k, k), 0)
+    blurred = cv2.GaussianBlur(blurred, (k, k), 0)
+    # Feathered mask: 1.0 inside box, fade to 0.0 over margin
+    yy, xx = np.meshgrid(np.arange(ph), np.arange(pw), indexing='ij')
+    # Distance from box edges (0 inside box, positive outside)
+    bx_local = bx1 - x0
+    by_local = by1 - y0
+    dx = np.maximum(bx_local - xx, 0) + np.maximum(xx - (bx_local + bw - 1), 0)
+    dy = np.maximum(by_local - yy, 0) + np.maximum(yy - (by_local + bh - 1), 0)
+    dist = np.sqrt(dx.astype(np.float32) ** 2 + dy.astype(np.float32) ** 2)
+    mask = np.clip(1.0 - dist / max(margin, 1), 0.0, 1.0)
+    mask = mask[:, :, np.newaxis]
+    roi_out = roi * (1.0 - mask) + blurred * mask
+    img[y0:y1, x0:x1] = np.clip(roi_out, 0, 255).astype(np.uint8)
+    return img
+
+
+def _blur_watermark_folder(folder_path: str) -> int:
+    """Blur watermark on all frame_*.png in folder. Returns count processed."""
+    if not os.path.isdir(folder_path):
+        return 0
+    files = sorted([f for f in os.listdir(folder_path) if f.startswith("frame_") and f.endswith(".png")])
+    for f in files:
+        path = os.path.join(folder_path, f)
+        img = cv2.imread(path)
+        if img is not None:
+            _blur_watermark_region(img)
+            cv2.imwrite(path, img)
+    return len(files)
+
+
 def _chrono_from_video(video_path: str, out_path: str, n_poses: int, blend: str = "lighten", to_grayscale: bool = False) -> bool:
     """Subsample video to n_poses frames, blend (lighten or long_exposure), save. Returns True if saved."""
     cap = cv2.VideoCapture(video_path)
@@ -853,7 +918,8 @@ def check_existing_outputs(output_dir: str, effects: list, blend_modes: list) ->
         "dithered": "dithered", "atkinson": "atkinson", "bayer": "bayer",
         "extract": "extract", "lowres": "lowres", "microres": "microres",
         "red_overlay": "red_overlay", "rainbow_trail": "rainbow_trail",
-        "depth_banding": "depth_banding", "chronophoto": "chronophoto",
+        "depth_banding": "depth_banding", "depth_banding_v": "depth_banding_v", "depth_banding_h": "depth_banding_h",
+        "chronophoto": "chronophoto",
         "chroma_atkinson": "chroma_atkinson", "chroma_dithered": "chroma_dithered",
         "raw_atkinson": "raw_atkinson", "raw_dithered": "raw_dithered",
         "chroma_extract": "chroma_extract", "raw_depth": "depth_maps",
@@ -909,7 +975,8 @@ def main():
     parser.add_argument("--alpha", type=float, default=0.5)
     parser.add_argument("--effects", type=str, nargs="+", 
                         default=["rainbow_trail", "microres", "lowres", "dithered", "depth", "red_overlay", "atkinson"],
-                        choices=["rainbow_trail", "microres", "lowres", "dithered", "depth", "red_overlay", "atkinson", "extract", "bayer", "depth_banding", "chronophoto",
+                        choices=["rainbow_trail", "microres", "lowres", "dithered", "depth", "red_overlay", "atkinson", "extract", "bayer",
+                                 "depth_banding", "depth_banding_v", "depth_banding_h", "chronophoto",
                                  "chroma_atkinson", "chroma_dithered", "raw_atkinson", "raw_dithered", "chroma_extract", "raw_depth", "pose_skeleton", "composite_skeleton_dithered"],
                         help="Which effects to generate")
     parser.add_argument("--output-dir", type=str, default=None)
@@ -918,6 +985,7 @@ def main():
     parser.add_argument("--workers", type=int, default=4, help="Number of worker threads")
     parser.add_argument("--batch-size", type=int, default=4, help="Batch size for depth estimation")
     parser.add_argument("--max-frames", type=int, default=None, help="Cap extracted frame count (for long videos)")
+    parser.add_argument("--no-blur-watermark", action="store_true", help="Skip blurring Veo watermark on raw frames")
     
     args = parser.parse_args()
     
@@ -1002,6 +1070,14 @@ def main():
         raw_frame_paths = [os.path.join(raw_frames_dir, f"frame_{i:04d}.png") for i in range(n)]
         raw_frame_paths = [p for p in raw_frame_paths if os.path.exists(p)]
     
+    # Blur Veo watermark on raw frames (and raw_dithered/raw_atkinson when present) unless disabled
+    if not getattr(args, 'no_blur_watermark', False):
+        for folder_name in ["raw_frames", "raw_dithered", "raw_atkinson"]:
+            folder = os.path.join(args.output_dir, folder_name)
+            count = _blur_watermark_folder(folder)
+            if count:
+                log("WATERMARK", f"Blurred {count} frames in {folder_name}")
+    
     # Create video for chroma_keyed frames (synchronous, not background)
     videos_dir = os.path.join(args.output_dir, "videos")
     os.makedirs(videos_dir, exist_ok=True)
@@ -1010,6 +1086,12 @@ def main():
         create_video_from_folder(chroma_keyed_dir, "chroma_keyed", videos_dir, args.target_fps)
     else:
         log("RESUME", "chroma_keyed.mp4 already exists")
+    # Raw frames video (watermark already blurred above)
+    if raw_frame_paths and not existing_status['videos'].get('raw_frames', False):
+        log("VIDEO", "Creating raw_frames.mp4...")
+        create_video_from_folder(raw_frames_dir, "raw_frames", videos_dir, args.target_fps)
+    elif existing_status['videos'].get('raw_frames', False):
+        log("RESUME", "raw_frames.mp4 already exists")
     
     # If only extract is requested, stop here
     if args.effects == ["extract"]:
@@ -1024,7 +1106,7 @@ def main():
     log("STATS", f"Frame brightness: mean={frame_stats[0]:.1f}, std={frame_stats[1]:.1f}")
     
     # Load Depth Anything V2 (only if needed)
-    needs_depth = "depth" in args.effects or "raw_depth" in args.effects or "depth_banding" in args.effects or args.blend_modes
+    needs_depth = any(e in args.effects for e in ("depth", "raw_depth", "depth_banding", "depth_banding_v", "depth_banding_h")) or args.blend_modes
     pipe = None
     if needs_depth:
         log("MODEL", f"Loading {args.model}...")
@@ -1048,11 +1130,11 @@ def main():
             'mask_dilate': 0
         }
     
-    # Depth input: raw frames when raw_depth requested (and available), else chroma
+    # Depth input: always use raw frames when available (better depth from full image)
     depth_frame_paths = frame_paths
-    if "raw_depth" in args.effects and raw_frame_paths and len(raw_frame_paths) == len(frame_paths):
+    if raw_frame_paths and len(raw_frame_paths) == len(frame_paths):
         depth_frame_paths = raw_frame_paths
-        log("DEPTH", "Using raw frames for depth estimation (raw_depth)")
+        log("DEPTH", "Using raw frames for depth estimation")
     
     # Define function to run depth estimation
     def run_depth_estimation():
@@ -1106,7 +1188,7 @@ def main():
         return depth_imgs
     
     # Check if depth is needed for any effects
-    needs_depth = "depth" in args.effects or "raw_depth" in args.effects or "depth_banding" in args.effects or args.blend_modes
+    needs_depth = any(e in args.effects for e in ("depth", "raw_depth", "depth_banding", "depth_banding_v", "depth_banding_h")) or args.blend_modes
     
     # Run depth estimation - will be used in parallel with independent effects
     depth_images = []
@@ -1532,7 +1614,53 @@ def main():
             log("RESUME", "depth_banding.mp4 already exists")
     elif existing_status['effects'].get('depth_banding', False):
         log("RESUME", "Using existing depth_banding frames")
-    
+
+    # Depth banding vertical (Sobel Y only — horizontal contour lines)
+    for variant, sobel_dx, sobel_dy, label in [
+        ("depth_banding_v", 0, 1, "vertical"),
+        ("depth_banding_h", 1, 0, "horizontal"),
+    ]:
+        if variant in args.effects and not existing_status['effects'].get(variant, False):
+            log("EFFECT", f"Creating depth banding {label} frames...")
+            var_dir = os.path.join(args.output_dir, variant)
+            os.makedirs(var_dir, exist_ok=True)
+            for idx, frame_path in enumerate(tqdm(frame_paths, desc=f"Depth banding {label}", unit="frame")):
+                frame = cv2.imread(frame_path)
+                if frame is None:
+                    continue
+                h, w = frame.shape[:2]
+                if idx < len(depth_images):
+                    depth = depth_images[idx]
+                    if depth.shape != (h, w):
+                        depth = cv2.resize(depth, (w, h))
+                else:
+                    depth = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                depth_thresh, _ = cv2.threshold(depth, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                subject_mask = depth > depth_thresh
+                masked_depth = np.where(subject_mask, depth, 0).astype(np.uint8)
+                clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+                enhanced = clahe.apply(masked_depth)
+                smoothed = cv2.GaussianBlur(enhanced, (3, 3), 0)
+                num_bands = 12
+                quantized = (smoothed.astype(np.float32) / 255.0 * num_bands).astype(np.uint8)
+                quantized = (quantized * (255 // max(1, num_bands))).astype(np.uint8)
+                # Directional Sobel instead of Canny
+                sobel = cv2.Sobel(quantized, cv2.CV_64F, sobel_dx, sobel_dy, ksize=3)
+                edges = np.abs(sobel).astype(np.uint8)
+                _, edges = cv2.threshold(edges, 15, 255, cv2.THRESH_BINARY)
+                kernel = np.ones((2, 2), np.uint8)
+                edges = cv2.dilate(edges, kernel, iterations=1)
+                result = np.where(subject_mask, edges, 0).astype(np.uint8)
+                Image.fromarray(result, mode='L').save(os.path.join(var_dir, f"frame_{idx:04d}.png"))
+            log("EFFECT", f"Depth banding {label} done")
+            if not existing_status['videos'].get(variant, False):
+                log("VIDEO", f"Creating {variant}.mp4...")
+                create_video_from_folder(var_dir, variant, videos_dir, args.target_fps)
+            else:
+                log("RESUME", f"{variant}.mp4 already exists")
+        elif existing_status['effects'].get(variant, False):
+            log("RESUME", f"Using existing {variant} frames")
+
     # Chronophotography composites (only if blend modes specified and depth available)
     if args.blend_modes and resized_depths:
         log("CHRONO", "Creating blend composites...")

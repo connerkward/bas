@@ -69,8 +69,57 @@ Summary of work on the pre_render pipeline, real-time feasibility, and frame int
 
 ---
 
+## 6. Veo Watermark Blur (2025-02-05)
+
+### Problem
+Veo "Veo" text watermark in bottom-right of generated videos. Visible on all non-chroma frames.
+
+### Solution
+- **Coords at 720p:** (660, 1245) → (703, 1262) — 43×17px box
+- **Feather:** 10px margin, linear falloff from box edges
+- **Blur:** Double-pass Gaussian (k=51 capped to patch size)
+- **Resolution scaling:** All coords scale by `width/720` and `height/1280` for 1080p etc.
+
+### Implementation
+- `depth_blend_video.py`: `_blur_watermark_region()` — feathered blur, resolution-scaled
+- `blur_watermark_raw.py`: Standalone script, same logic
+- `test_watermark_blur.py`: Test script (reads frame 0 from source video, applies blur)
+- **Pipeline default:** Blur enabled unless `--no-blur-watermark`
+- **Pre-blur video approach:** For speed, blur source video once with cv2 (261fps), then run pipeline with `--no-blur-watermark` on the pre-blurred `-nowm.mp4`
+
+### Constants (720p reference)
+```
+_VEO_BOX_X1_REF = 660   _VEO_BOX_Y1_REF = 1245
+_VEO_BOX_W_REF  = 43    _VEO_BOX_H_REF  = 17
+_VEO_FEATHER_REF = 10
+```
+
+## 7. Depth on Raw Frames (2025-02-05)
+
+**Change:** Depth estimation now always uses raw frames (not chroma-keyed) when available. Better depth maps from full image with background context.
+
+## 8. New Effects (2025-02-05)
+
+### depth_banding_v / depth_banding_h
+Directional depth contour lines using Sobel instead of Canny:
+- `depth_banding_v`: Sobel(dx=0, dy=1) — horizontal contour lines
+- `depth_banding_h`: Sobel(dx=1, dy=0) — vertical contour lines
+Same quantization/CLAHE pipeline as `depth_banding`.
+
+## 9. Pre-render v2 Output (2025-02-05)
+
+`outputs/2025-02-05_runside_megaslow_compressed_720p_v2/`
+
+Source: `input_videos/runside-megaslow-compressed-nowm.mp4` (pre-blurred watermark)
+
+Effects: depth, raw_depth, dithered, atkinson, microres, lowres, extract, depth_banding, depth_banding_v, depth_banding_h, red_overlay, chroma_dithered, chroma_atkinson, raw_dithered, raw_atkinson, chroma_extract + chronophoto matrices + long exposure variants.
+
+---
+
 ## References
 
 - Chronophoto: `CHRONOPHOTO_CONTEXT.md`
 - Depth/contour effects: `DEPTH_BANDING_SESSION.md`, `DEPTH_EFFECTS_REFERENCE.md`
 - Pipeline script: `depth_blend_video.py`
+- Watermark test: `test_watermark_blur.py`
+- Standalone watermark blur: `blur_watermark_raw.py`

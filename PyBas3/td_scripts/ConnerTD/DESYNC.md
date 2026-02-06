@@ -23,6 +23,17 @@ Real-time chronophotographic effect with sync/desync cycle using image sequences
 | **Composites** | `comp0` → `comp1` → `comp_final` (chained) |
 | **Post** | `post_mono`, `invert` |
 | **Outputs** | `out_color`, `out_mono`, `out_invert` |
+| **Record** | `record_out` (moviefileoutTOP) – image sequence or movie |
+
+## Recording (avoid real-time slowdown)
+
+Record as **image sequence** (Type = Image Sequence, PNG). Frames written to `project.folder + '/desync_frames/frame'` → `desync_frames/frame_0000.png`, … Toggle **Record** on/off; no encoding in TD.
+
+**Encode to video after recording** (from ConnerTD folder):
+```bash
+ffmpeg -y -framerate 30 -i desync_frames/frame_%04d.png -c:v libx264 -pix_fmt yuv420p -crf 23 desync_output.mp4
+```
+For desync_random use folder `desync_random_frames` and same pattern.
 
 ## Control Parameters
 
@@ -107,16 +118,139 @@ Composite operand and background color are expressions referencing `invert_mode`
 | `Desync.toe` | TouchDesigner project |
 | `DESYNC.md` | This documentation |
 
-## Changing Image Sequence
+---
 
-To switch sequences, update the `SEQ_BASE` path in timeline and wrap file expressions:
+# desync_random – Multi-Sequence Randomized Variant
 
-```python
-# In TD Python or via MCP:
-SEQ_BASE = '/path/to/new/sequence/frame_'
-for i in [0, 2, 4]:
-    t = op('/project1/desync/timeline' + str(i))
-    # ... update t.par.file.expr with new SEQ_BASE
+Subproject at `/project1/desync_random`. Cycles through multiple visual styles with crossfade transitions, random overlays, and variable parameters.
+
+## Architecture
+
+**Dual Chain Design** for smooth crossfades between sequences:
+- **Chain A**: Shows current sequence
+- **Chain B**: Shows next sequence
+- **Master Cross**: Fades A→B during last `trans_time` sec of each `seq_period`
+- **Overlay System**: Random second layer blended on top
+
+Each chain has:
+- 3 timelines (offset multipliers: -1, 0, +1)
+- 3 wrap TOPs (for loop crossfade)
+- 3 cross TOPs (blend timeline↔wrap)
+- 3 mono TOPs (grayscale conversion)
+- Dynamic background (black/white based on sequence)
+- Chained composites (min/max based on sequence)
+
+## Sequences (stored in `seq_config` textDAT)
+
+Current source: `/Users/CONWARD/dev/bas/PyBas3/pre_render/outputs/2025-02-05_runside_megaslow_compressed_720p_blend_output/`
+
+| Index | Sequence | Prefix | Blend | Frames |
+|-------|----------|--------|-------|--------|
+| 0 | chroma_dithered | frame_ | max | 4585 |
+| 1 | chroma_keyed | frame_ | max | 4585 |
+| 2 | pose_skeleton/frames | frame_ | max | 4585 |
+| 3 | raw_frames | frame_ | min | 4585 |
+
+**Blend**: max = black bg + white fig, min = white bg + black fig
+
+## Control Parameters
+
+### Playback Speed
+| Node | Channel | Default | Purpose |
+|------|---------|---------|---------|
+| `speed` | speed | 1.0 | Runner speed multiplier (0.5=half, 2.0=double) |
+| `src_fps` | fps | 30 | Source recording framerate |
+
+### Desync Timing
+| Node | Channel | Default | Purpose |
+|------|---------|---------|---------|
+| `sync_hold` | sec | 5 | Seconds timelines stay in sync (start & end of cycle) |
+| `desync_duration` | sec | 10 | Seconds of desync phase (ramp up + down) |
+| `desync_val` | desync | (auto) | Current desync intensity 0→1→0 |
+
+Total cycle = `2 × sync_hold + desync_duration`
+
+### Spread (Frame Offset)
+| Node | Channel | Default | Purpose |
+|------|---------|---------|---------|
+| `spread_min` | frames | 30 | Minimum frame offset between timelines |
+| `spread_max` | frames | 120 | Maximum frame offset between timelines |
+| `spread_val` | frames | (auto) | Current spread - varies each desync cycle |
+
+Spread changes per cycle using golden ratio for organic variation.
+
+### Sequence Switching
+| Node | Channel | Default | Purpose |
+|------|---------|---------|---------|
+| `seq_period` | sec | 30 | Duration per sequence before switching |
+| `trans_time` | sec | 2 | Crossfade duration between sequences |
+| `fade_zone` | frames | 90 | Loop crossfade region (within sequence) |
+
+### Overlay System
+| Node | Channel | Default | Purpose |
+|------|---------|---------|---------|
+| `overlay_idx` | idx | (auto) | Which sequence to overlay (different from main) |
+| `overlay_opacity` | opacity | (auto) | Overlay visibility 0-0.7, fades during transitions |
+
+Overlay fades out before index change, fades in after (1.5 sec fade).
+
+## Timing Cycle
+
+```
+Desync cycle (default 20 sec):
+├─ 0-5s:    SYNC      desync_val=0, timelines aligned
+├─ 5-15s:   DESYNC    desync_val ramps 0→1→0 (cosine)
+└─ 15-20s:  SYNC      desync_val=0, timelines converge
+
+Sequence cycle (default 30 sec):
+├─ 0-28s:   Show sequence, overlay fades in/out randomly
+└─ 28-30s:  Crossfade to next sequence
 ```
 
-Also update `VIDEO_LENGTH` if frame count differs.
+## Output Chain
+
+```
+Chain A/B composites
+       ↓
+  master_cross (A↔B crossfade)
+       ↓
+  overlay_comp (+ overlay layer)
+       ↓
+  overlay_cross (opacity control)
+       ↓
+     tint (orange-red, animated intensity)
+       ↓
+      out
+```
+
+## Tint
+
+Orange-red colorization with animated intensity (~15 sec cycle):
+- Highs R: 0.65 + 0.35 × sin(t × 0.42)
+- Highs G: 0.23 + 0.12 × sin(t × 0.42)
+- Highs B: 0.10 + 0.05 × sin(t × 0.42)
+
+## Project Settings
+
+- **Cook Rate**: 90 fps (set via `project.cookRate`)
+- **Resolution**: 720×1280 (9:16 vertical)
+
+## Recording
+
+`record_out` (moviefileoutTOP) – image sequence to `desync_random_frames/frame_XXXX.png`
+
+Encode with ffmpeg:
+```bash
+ffmpeg -y -framerate 90 -i desync_random_frames/frame_%04d.png -c:v libx264 -pix_fmt yuv420p -crf 18 desync_random_output.mp4
+```
+
+## Quick Reference
+
+| Want to... | Adjust... |
+|------------|-----------|
+| Slow down runner | `speed` (lower = slower) |
+| Longer sync periods | `sync_hold` |
+| Shorter desync | `desync_duration` |
+| More spread variation | `spread_min` / `spread_max` |
+| Faster sequence switching | `seq_period` |
+| Smoother seq transitions | `trans_time` |
