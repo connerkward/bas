@@ -864,6 +864,32 @@ def process_dither_frame(args):
     return result
 
 
+def process_color_dither_frame(args):
+    """Dither luminance (Floyd-Steinberg) but keep original color: LAB L = dithered, A/B = source."""
+    idx, frame_path, output_dir, dither_type = args
+    frame = cv2.imread(frame_path)
+    if frame is None:
+        return None
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    h, w = gray.shape
+    if dither_type == "floyd":
+        pil_gray = Image.fromarray(gray, mode='L')
+        dithered = pil_gray.convert('1', dither=Image.Dither.FLOYDSTEINBERG)
+        lum = np.array(dithered.convert('L'))
+    elif dither_type == "atkinson":
+        gray_f = np.ascontiguousarray(gray.astype(np.float32))
+        _atkinson_dither(gray_f)
+        lum = np.clip(gray_f, 0, 255).astype(np.uint8)
+    else:
+        lum = gray
+    lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
+    lab[:, :, 0] = lum
+    result = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+    out_path = os.path.join(output_dir, f"frame_{idx:04d}.png")
+    cv2.imwrite(out_path, result)
+    return result
+
+
 def process_pixel_frame(args):
     """Thread worker for pixelated frames with adaptive threshold."""
     idx, frame_path, output_dir, scale, frame_stats = args
@@ -921,6 +947,7 @@ def check_existing_outputs(output_dir: str, effects: list, blend_modes: list) ->
         "depth_banding": "depth_banding", "depth_banding_v": "depth_banding_v", "depth_banding_h": "depth_banding_h",
         "chronophoto": "chronophoto",
         "chroma_atkinson": "chroma_atkinson", "chroma_dithered": "chroma_dithered",
+        "color_dithered": "color_dithered",
         "raw_atkinson": "raw_atkinson", "raw_dithered": "raw_dithered",
         "chroma_extract": "chroma_extract", "raw_depth": "depth_maps",
         "pose_skeleton": "pose_skeleton",
@@ -977,7 +1004,7 @@ def main():
                         default=["rainbow_trail", "microres", "lowres", "dithered", "depth", "red_overlay", "atkinson"],
                         choices=["rainbow_trail", "microres", "lowres", "dithered", "depth", "red_overlay", "atkinson", "extract", "bayer",
                                  "depth_banding", "depth_banding_v", "depth_banding_h", "chronophoto",
-                                 "chroma_atkinson", "chroma_dithered", "raw_atkinson", "raw_dithered", "chroma_extract", "raw_depth", "pose_skeleton", "composite_skeleton_dithered"],
+                                 "chroma_atkinson", "chroma_dithered", "color_dithered", "raw_atkinson", "raw_dithered", "chroma_extract", "raw_depth", "pose_skeleton", "composite_skeleton_dithered"],
                         help="Which effects to generate")
     parser.add_argument("--output-dir", type=str, default=None)
     parser.add_argument("--force-greenscreen", action="store_true", help="Force green screen mode")
@@ -1351,6 +1378,15 @@ def main():
             list(tqdm(executor.map(process_dither_frame, args_list), total=len(args_list), desc="Chroma dithered", unit="frame"))
         if not existing_status['videos'].get('chroma_dithered', False):
             create_video_from_folder(out_dir, "chroma_dithered", videos_dir, args.target_fps)
+    if "color_dithered" in args.effects and not existing_status['effects'].get('color_dithered', False):
+        log("DITHER", "Creating color_dithered frames (luminance dither + original color)...")
+        out_dir = os.path.join(args.output_dir, "color_dithered")
+        os.makedirs(out_dir, exist_ok=True)
+        with ThreadPoolExecutor(max_workers=args.workers) as executor:
+            args_list = [(i, p, out_dir, "floyd") for i, p in enumerate(frame_paths)]
+            list(tqdm(executor.map(process_color_dither_frame, args_list), total=len(args_list), desc="Color dithered", unit="frame"))
+        if not existing_status['videos'].get('color_dithered', False):
+            create_video_from_folder(out_dir, "color_dithered", videos_dir, args.target_fps)
     if "chroma_atkinson" in args.effects and not existing_status['effects'].get('chroma_atkinson', False):
         log("DITHER", "Creating chroma_atkinson frames...")
         out_dir = os.path.join(args.output_dir, "chroma_atkinson")

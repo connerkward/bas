@@ -15,6 +15,7 @@ Real-time chronophotographic effect with sync/desync cycle using image sequences
 | Column | Nodes |
 |--------|-------|
 | **Controls** | `sync_hold`, `desync_duration`, `spread`, `baseline_fps`, `fade_zone`, `invert_mode` |
+| **Sequence** | `seq_select` (constantCHOP, channel `seq` 0–4), `seq_config` (textDAT: one path per row) |
 | **Desync** | `desync_val` (constantCHOP with expression) |
 | **Timelines** | `timeline0`, `timeline2`, `timeline4` (moviefileinTOP) |
 | **Wraps** | `wrap0`, `wrap2`, `wrap4` (for cross dissolve) |
@@ -25,15 +26,32 @@ Real-time chronophotographic effect with sync/desync cycle using image sequences
 | **Outputs** | `out_color`, `out_mono`, `out_invert` |
 | **Record** | `record_out` (moviefileoutTOP) – image sequence or movie |
 
-## Recording (avoid real-time slowdown)
+## Offline render (Python, frame-perfect, no TD)
 
-Record as **image sequence** (Type = Image Sequence, PNG). Frames written to `project.folder + '/desync_frames/frame'` → `desync_frames/frame_0000.png`, … Toggle **Record** on/off; no encoding in TD.
+For export that matches the preview and is not laggy, use the Python renderer (no TouchDesigner):
 
-**Encode to video after recording** (from ConnerTD folder):
 ```bash
-ffmpeg -y -framerate 30 -i desync_frames/frame_%04d.png -c:v libx264 -pix_fmt yuv420p -crf 23 desync_output.mp4
+cd PyBas3
+uv run python pre_render/render_desync.py path/to/chroma_dithered -o artifacts/desync_render --duration 20
 ```
-For desync_random use folder `desync_random_frames` and same pattern.
+
+- **Input:** Directory with `frame_0000.png` … `frame_0599.png` (e.g. `pre_render/outputs/.../chroma_dithered`).
+- **Output:** PNGs in `-o` dir, then `desync_output.mp4` (30 fps, H.264, faststart). Use `--no-video` to only write PNGs; `--video-path` to set the MP4 path; `--invert 1` for max blend + black bg.
+- Logic matches TD: desync ramp, 3 timelines (±65 spread), 30-frame cross dissolve, luminance then min/max composite, `int()` frame index (no round).
+- **If the render doesn’t match the preview:** use `--compare-sec 10` (or another time) to write a single frame to `compare.png`. In TD, pause at that time (e.g. 10s), export `out_color` to an image, and compare. Use `--output-fps 60` or `120` for faster playback to match preview feel.
+
+## Recording in TouchDesigner (images then video)
+
+1. **In TouchDesigner:** Set `record_out` to **Type = Image Sequence**, **Image Type = PNG**, **File** = `artifacts/desync_frames/frame` (or `project.folder + '/desync_frames/frame'`). Set **Limit Length** = 600 frames if you want one 20s cycle.
+2. **Put TD in Play (F5).** Turn **Record** on on `record_out`. Wait ~20 seconds. Turn **Record** off. Frames are written as `frame.0.0000.png`, `frame.0.0001.png`, … (under `artifacts/desync_frames/` or `ConnerTD/desync_frames/`).
+3. **Encode to video** (smooth, no real-time encoding drops):
+```bash
+# From repo root or ConnerTD:
+./PyBas3/td_scripts/ConnerTD/encode_desync_frames.sh
+# Or with custom paths:
+./encode_desync_frames.sh /path/to/frames /path/to/output.mp4
+```
+Script uses H.264, main profile, faststart. For desync_random use folder `desync_random_frames` and the same script with that path.
 
 ## Control Parameters
 
@@ -46,17 +64,27 @@ For desync_random use folder `desync_random_frames` and same pattern.
 | `fade_zone` | frames | 60 | Reference (actual crossfade is 30 frames) |
 | `invert_mode` | invert | 0/1 | **0** = min blend + white bg, **1** = max blend + black bg |
 
-## Image Sequence Source
+## Image Sequence Source / Switching Inputs
 
-Currently using pre-rendered frames:
+**Sequence selection:** Set `seq_select` channel `seq` to 0–4 to switch which input sequence is used. Paths are taken from the **seq_config** text DAT (one full folder path per row). Default rows:
+
+| seq | Folder |
+|-----|--------|
+| 0 | chroma_dithered |
+| 1 | chroma_keyed |
+| 2 | raw_frames |
+| 3 | chroma_atkinson |
+| 4 | composite_skeleton_dithered |
+
+Base path (edit rows in `seq_config` to add or change sequences):
 ```
-/Users/CONWARD/dev/bas/PyBas3/pre_render/outputs/runside_megaslow_compressed_720p_blend_output/chroma_dithered/frame_XXXX.png
+.../pre_render/outputs/2025-02-05_runside_megaslow_compressed_720p_blend_output/<folder>
 ```
 
-- 600 frames, 720×1280
-- **File path is an expression** - dynamically loads correct frame each cook
+- 600 frames, 720×1280 (per sequence)
+- **File path is an expression** – uses `seq_config[int(seq_select.seq)]` + `/frame_XXXX.png`
 
-Available sequences in same directory:
+Other folders you can add to `seq_config`:
 - `raw_frames/` - original video frames
 - `chroma_dithered/` - dithered chroma key (current)
 - `chroma_atkinson/` - Atkinson dithered
@@ -220,8 +248,12 @@ Chain A/B composites
        ↓
      tint (orange-red, animated intensity)
        ↓
-      out
+  loop_fade
+   ↙     ↘
+  out   preview_invert → out_invert
 ```
+- **out** – main preview
+- **out_invert** – same video, inverted (level TOP); use as second viewer
 
 ## Tint
 
