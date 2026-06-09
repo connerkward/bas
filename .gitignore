@@ -1,30 +1,4 @@
 .DS_Store
-
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.pyc
-.venv/
-venv/
-.pytest_cache/
-*.egg-info/
-*.egg
-
-# Numba cache
-*.nbc
-*.nbi
-
-# Node
+.serve-url
 node_modules/
-
-# Env/secrets
-.env
-.env.*
-!.env.example
-
-# IDE/Assistant
-.cursor/rules/openmemory.mdc
-
-# Logs
 *.log

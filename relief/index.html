@@ -1,0 +1,773 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Relief Lookdev</title>
+<style>
+  :root { --paper:#15171c; --ink:#e8e6e1; --mut:#9aa0aa; --line:#2c313b; --accent:#7db4ff; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; background:var(--paper); color:var(--ink);
+    font:13px/1.4 ui-monospace,Menlo,Consolas,monospace; overflow:hidden; }
+  #app { display:flex; height:100%; }
+  #stage { flex:1; position:relative; }
+  #c { width:100%; height:100%; display:block; }
+  #hud { position:absolute; top:10px; left:12px; pointer-events:none;
+    color:var(--mut); font-size:11px; text-shadow:0 1px 2px #000; white-space:pre; }
+  #gizmo { position:absolute; top:8px; right:8px; width:104px; height:104px; }
+  .gzbtn { position:absolute; right:116px; width:26px; height:26px; padding:0;
+    font-size:15px; line-height:1; opacity:.8; }
+  .gzbtn:hover { opacity:1; }
+  #rollccw { top:8px; } #rollcw { top:38px; } #homeview { top:68px; }
+  #panel { width:312px; flex:none; border-left:1px solid var(--line);
+    background:#101216; overflow-y:auto; padding:12px 12px 60px; }
+  h2 { font-size:11px; letter-spacing:.12em; text-transform:uppercase; color:var(--mut);
+    margin:16px 0 6px; border-bottom:1px solid var(--line); padding-bottom:4px; }
+  h2:first-child { margin-top:0; }
+  .row { display:grid; grid-template-columns:1fr 64px; gap:6px; align-items:center; margin:7px 0; }
+  .row label { grid-column:1 / -1; font-size:11px; color:var(--mut); display:flex; justify-content:space-between; }
+  .row input[type=range] { width:100%; accent-color:var(--accent); }
+  .row input[type=number] { width:100%; background:#0a0c10; color:var(--ink); border:1px solid var(--line);
+    border-radius:4px; padding:3px 5px; font:inherit; font-size:11px; }
+  .chk { display:flex; align-items:center; gap:7px; margin:7px 0; font-size:12px; cursor:pointer; }
+  .chk input { accent-color:var(--accent); }
+  .btnrow { display:flex; gap:6px; flex-wrap:wrap; margin-top:8px; }
+  button { background:#1b1f27; color:var(--ink); border:1px solid var(--line); border-radius:5px;
+    padding:6px 9px; font:inherit; font-size:11px; cursor:pointer; }
+  button:hover { border-color:var(--accent); color:#fff; }
+  button.pri { background:var(--accent); color:#06101f; border-color:var(--accent); font-weight:600; }
+  textarea { width:100%; height:120px; background:#0a0c10; color:var(--mut); border:1px solid var(--line);
+    border-radius:5px; font:inherit; font-size:10px; padding:6px; resize:vertical; margin-top:6px; }
+  .note { font-size:10px; color:#666c78; margin-top:4px; }
+  .stat { color:var(--accent); }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="stage">
+    <canvas id="c"></canvas>
+    <div id="hud"></div>
+    <canvas id="gizmo" title="Click a face / edge / corner to snap · drag to orbit"></canvas>
+    <button id="rollccw" class="gzbtn" title="Rotate view 90° CCW">⟲</button>
+    <button id="rollcw"  class="gzbtn" title="Rotate view 90° CW">⟳</button>
+    <button id="homeview" class="gzbtn" title="Home / reset view">⌂</button>
+  </div>
+  <div id="panel"></div>
+</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+}}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { STLExporter } from 'three/addons/exporters/STLExporter.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+// ---------- defaults ----------
+// nominal US XPS board thicknesses (Foamular / Styrofoam), label + mm
+const XPS = [['½"',12.7],['¾"',19.05],['1"',25.4],['1½"',38.1],['2"',50.8],['2½"',63.5],['3"',76.2],['4"*',101.6]];
+const SHEET = {w:2438, h:1219, label:"4'×8'"}; // standard US XPS sheet (96"×48")
+// best uniform-orientation grid layup of a W×H footprint; returns the chosen grid
+function sheetLayout(W,H){
+  const a={sw:SHEET.w,sh:SHEET.h,cols:Math.ceil(W/SHEET.w),rows:Math.ceil(H/SHEET.h)};
+  const b={sw:SHEET.h,sh:SHEET.w,cols:Math.ceil(W/SHEET.h),rows:Math.ceil(H/SHEET.w)};
+  const L=(b.cols*b.rows < a.cols*a.rows)?b:a;
+  L.count=Math.max(1,L.cols*L.rows);
+  L.util=(W*H)/(L.count*SHEET.w*SHEET.h); // fraction of bought sheet area actually used
+  return L;
+}
+function sheetCount(W,H){ return sheetLayout(W,H).count; }
+const XPS_WARN = 12.7;  // backplate < 1/2" is fragile in XPS foam
+const XPS_MIN  = 6.35;  // backplate < 1/4" — will crumble / won't survive milling
+const MIN_RELIEF = 1;   // always leave at least 1mm of relief
+const DEFAULTS = {
+  widthMM: 200,        // physical width of the whole plaque
+  boardMM: 50.8,       // XPS board thickness = total block height (2")
+  backplateMM: 25.4,   // solid backing left behind the relief; relief = board − backplate
+  frameThickMM: 12,    // border width
+  frameExtraMM: 0,     // frame top vs board top face (0 = flush w/ board top & white; ≤0 recesses)
+  gapMM: 2,            // recessed groove between relief and frame
+  res: 320,            // mesh segments across width
+  blur: 1.0,           // smoothing radius (grid cells)
+  gamma: 1.0,          // depth curve
+  contrast: 1.0,       // depth contrast around mid
+  floor: 0.0,          // clamp darkest values up to this (0..1)
+  blackToFloor: true,  // collapse background to interior floor (machinable flat ground)
+  invert: false,       // flip near/far
+  wire: false,
+  shade: 'clay',       // clay | normal | matcap
+  xray: false,         // ghost the relief + show the solid backplate slab
+  present: false,      // gallery presentation render rig (spotlight + dark wall + shadows)
+  upscaled: false,     // sample the 4×-UltraSharp upscaled source instead of the original
+  crop: {x:0, y:0, w:1, h:1},  // normalized crop of the source depth map
+};
+const META = {
+  widthMM:    {min:50,  max:4877, step:5,    label:'Plaque width (mm)'}, // up to ~2 sheet-lengths
+  backplateMM:{min:0,   max:101.6,step:0.5,  label:'Backplate thickness (mm)'},
+  frameThickMM:{min:0,  max:50,   step:0.5,  label:'Frame width (mm)'},
+  frameExtraMM:{min:-101.6,max:0, step:0.5,  label:'Frame top vs board top (mm)'},
+  gapMM:      {min:0,   max:20,   step:0.5,  label:'Relief↔frame groove (mm)'},
+  res:        {min:60,  max:560,  step:10,   label:'Mesh resolution (seg)'},
+  blur:       {min:0,   max:8,    step:0.25, label:'Smoothing'},
+  gamma:      {min:0.3, max:3,    step:0.05, label:'Gamma (depth curve)'},
+  contrast:   {min:0.3, max:2.5,  step:0.05, label:'Contrast'},
+  floor:      {min:0,   max:0.6,  step:0.01, label:'Dark floor clamp'},
+};
+let state = structuredClone(DEFAULTS);
+
+// ---------- three setup ----------
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({canvas, antialias:true, preserveDrawingBuffer:true});
+renderer.setPixelRatio(Math.min(2, devicePixelRatio));
+renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.05;
+renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+const scene = new THREE.Scene();
+const BG_FLAT=0x0c0e12, BG_DARK=0x060708;
+scene.background = new THREE.Color(BG_FLAT);
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture; // soft IBL for real material response
+let camera = new THREE.PerspectiveCamera(38, 1, 1, 5000);
+let persp = true;
+// swap perspective <-> orthographic, preserving position/target/up
+function setProjection(toPersp){
+  if(toPersp===persp) return; persp=toPersp;
+  const tgt=controls.target.clone(), posv=camera.position.clone(), upv=camera.up.clone();
+  const aspect=canvas.clientWidth/canvas.clientHeight||1;
+  if(persp){ camera=new THREE.PerspectiveCamera(38,aspect,0.1,20000); }
+  else { const dist=posv.distanceTo(tgt), h=2*dist*Math.tan(38*Math.PI/180/2);
+    camera=new THREE.OrthographicCamera(-h*aspect/2,h*aspect/2,h/2,-h/2,-20000,20000); }
+  camera.position.copy(posv); camera.up.copy(upv); camera.lookAt(tgt);
+  rebuildControls(); camera.updateProjectionMatrix();
+}
+let controls = new OrbitControls(camera, canvas);
+controls.enableDamping = true;
+let rolled = false; // true when camera.up has been rolled off +Y
+// r160 OrbitControls captures its orbit-axis from camera.up ONCE at construction.
+// So any time we change camera.up (roll), rebuild the controls to re-capture it.
+function rebuildControls(){
+  const tgt = controls.target.clone();
+  controls.dispose();
+  controls = new OrbitControls(camera, canvas);
+  controls.enableDamping = true;
+  controls.target.copy(tgt);
+  controls.update();
+}
+
+const amb = new THREE.AmbientLight(0xffffff, 0.35); scene.add(amb);
+const key = new THREE.DirectionalLight(0xffffff, 2.2); key.position.set(-0.6,1,0.7); scene.add(key);
+const fill = new THREE.DirectionalLight(0x88aaff, 0.6); fill.position.set(1,0.4,0.5); scene.add(fill);
+const rim = new THREE.DirectionalLight(0xffffff, 0.7); rim.position.set(0.2,0.6,-1); scene.add(rim);
+const baseLight={amb:0.35,key:2.2,fill:0.6,rim:0.7};
+// gallery presentation rig (off until toggled): warm raking spotlight + dark back wall + shadows
+const spot = new THREE.SpotLight(0xffe9c7, 0, 0, 0.55, 0.65); spot.decay=0; spot.castShadow=true;
+spot.shadow.mapSize.set(2048,2048); spot.shadow.bias=-0.0004; scene.add(spot); scene.add(spot.target);
+const wall = new THREE.Mesh(new THREE.PlaneGeometry(1,1),
+  new THREE.MeshStandardMaterial({color:0x15171c, roughness:0.96, metalness:0}));
+wall.receiveShadow=true; wall.visible=false; scene.add(wall);
+
+const grp = new THREE.Group(); scene.add(grp);
+const mats = {
+  clay: new THREE.MeshStandardMaterial({color:0xc9bfa9, roughness:0.86, metalness:0.0, envMapIntensity:0.85, side:THREE.DoubleSide}),
+  normal: new THREE.MeshNormalMaterial(),
+  ghost: new THREE.MeshStandardMaterial({color:0xcdd4dc, roughness:0.5, transparent:true,
+    opacity:0.16, depthWrite:false, side:THREE.DoubleSide}),
+  back: new THREE.MeshStandardMaterial({color:0x2bb6a0, roughness:0.55, metalness:0.0}),
+};
+
+// ---------- depth source ----------
+const img = new Image();              // original — also the crop thumbnail
+let imgData=null, IW=0, IH=0;         // ACTIVE source buffer (sampleGrid/lumAt read these)
+let srcOrig=null, srcUp=null;
+function bufFrom(im){ const c=document.createElement('canvas'); c.width=im.naturalWidth; c.height=im.naturalHeight;
+  const x=c.getContext('2d'); x.drawImage(im,0,0);
+  return {data:x.getImageData(0,0,im.naturalWidth,im.naturalHeight).data, W:im.naturalWidth, H:im.naturalHeight}; }
+function setActive(s){ if(!s) return; imgData=s.data; IW=s.W; IH=s.H; }
+img.onload = () => {
+  srcOrig=bufFrom(img); setActive(srcOrig);
+  buildPanel(); rebuild(); frameCamera(); pushHist(); loop();
+  // lazily pick up the 4×-UltraSharp bake if it exists
+  const up=new Image(); up.onload=()=>{ srcUp=bufFrom(up); markUpscale(true);
+    if(state.upscaled){ setActive(srcUp); rebuild(); } };
+  up.onerror=()=>markUpscale(false); up.src='depth-up.jpg';
+};
+img.src = 'depth.png';
+
+// luminance 0..1 at integer pixel
+function lumAt(x,y){ const i=(y*IW+x)*4; return (0.299*imgData[i]+0.587*imgData[i+1]+0.114*imgData[i+2])/255; }
+
+// ---------- build the relief grid (heights in 0..1 before scaling) ----------
+function sampleGrid(nx, ny){
+  // bilinear sample the cropped region into nx*ny. depth map: white=near=tall.
+  const cr=state.crop||{x:0,y:0,w:1,h:1};
+  const g=new Float32Array(nx*ny);
+  for(let j=0;j<ny;j++){
+    const v=j/(ny-1), sy=(cr.y+v*cr.h)*(IH-1);
+    const y0=Math.floor(sy), y1=Math.min(IH-1,y0+1), fy=sy-y0;
+    for(let i=0;i<nx;i++){
+      const u=i/(nx-1), sx=(cr.x+u*cr.w)*(IW-1);
+      const x0=Math.floor(sx), x1=Math.min(IW-1,x0+1), fx=sx-x0;
+      const a=lumAt(x0,y0), b=lumAt(x1,y0), c=lumAt(x0,y1), d=lumAt(x1,y1);
+      g[j*nx+i]=(a*(1-fx)+b*fx)*(1-fy)+(c*(1-fx)+d*fx)*fy;
+    }
+  }
+  return g;
+}
+function boxBlur(g,nx,ny,r){
+  if(r<=0) return g;
+  const rad=Math.max(1,Math.round(r));
+  const tmp=new Float32Array(g.length), out=new Float32Array(g.length);
+  for(let j=0;j<ny;j++) for(let i=0;i<nx;i++){ let s=0,n=0;
+    for(let k=-rad;k<=rad;k++){const x=i+k; if(x>=0&&x<nx){s+=g[j*nx+x];n++;}} tmp[j*nx+i]=s/n; }
+  for(let j=0;j<ny;j++) for(let i=0;i<nx;i++){ let s=0,n=0;
+    for(let k=-rad;k<=rad;k++){const y=j+k; if(y>=0&&y<ny){s+=tmp[y*nx+i];n++;}} out[j*nx+i]=s/n; }
+  return out;
+}
+function remap(g){
+  const s=state; const out=new Float32Array(g.length);
+  for(let i=0;i<g.length;i++){
+    let v=g[i];
+    if(s.invert) v=1-v;
+    // floor clamp + collapse background
+    if(v<s.floor) v = s.blackToFloor ? 0 : s.floor;
+    else if(s.floor>0) v=(v-s.floor)/(1-s.floor); // rescale above floor to full range
+    v=Math.pow(Math.max(0,Math.min(1,v)), 1/s.gamma);
+    v=(v-0.5)*s.contrast+0.5;
+    out[i]=Math.max(0,Math.min(1,v));
+  }
+  return out;
+}
+
+// ---------- geometry ----------
+let lastStats={};
+function rebuild(){
+  syncBounds();
+  while(grp.children.length){ const m=grp.children.pop(); m.geometry?.dispose(); }
+  const s=state;
+  const base=Math.min(s.boardMM, Math.max(0, s.backplateMM)); // solid backing you set
+  const relief=Math.max(0, s.boardMM - base);                  // carve uses the rest of the board
+  const cr=s.crop||{x:0,y:0,w:1,h:1};
+  const aspect=(cr.h*IH)/(cr.w*IW);                            // plaque aspect follows the crop
+  const W=s.widthMM, H=W*aspect;
+  const border=s.frameThickMM, gap=s.gapMM;
+  const inW=Math.max(4, W-2*(border+gap)), inH=Math.max(4, H-2*(border+gap));
+
+  // sample interior heightfield
+  const nx=Math.max(8, Math.round(s.res));
+  const ny=Math.max(8, Math.round(s.res*aspect));
+  let g=sampleGrid(nx,ny); g=boxBlur(g,nx,ny,s.blur); g=remap(g);
+
+  const reliefTop = base + relief;              // z of a pure-white pixel = board top face
+  const frameTopZ = reliefTop + s.frameExtraMM; // frame surface height (≤ board top)
+
+  // --- interior relief as a SOLID rooted on the backplate (top at base+h*relief, bottom at base) ---
+  const topZ=new Float32Array(nx*ny);
+  for(let j=0;j<ny;j++) for(let i=0;i<nx;i++) topZ[j*nx+i]=base + g[j*nx+i]*relief;
+  const solid=heightfieldSolid(nx,ny,inW,inH,topZ,base);
+
+  const geos=[solid];
+
+  // --- solid base slab (full footprint, 0..base) ---
+  if(base>0) geos.push(boxAt(W,H,base, 0,0, base/2));
+
+  // --- frame: 4 bars on border, base..frameTopZ ---
+  const fh=frameTopZ - base;
+  if(border>0 && fh>0){
+    const zc=base+fh/2;
+    geos.push(boxAt(W, border, fh, 0,  (H-border)/2, zc)); // top
+    geos.push(boxAt(W, border, fh, 0, -(H-border)/2, zc)); // bottom
+    geos.push(boxAt(border, H-2*border, fh, -(W-border)/2, 0, zc)); // left
+    geos.push(boxAt(border, H-2*border, fh,  (W-border)/2, 0, zc)); // right
+  }
+
+  const merged=mergeGeometries(geos, false) || solid;
+  merged.computeVertexNormals();
+  const mainMat = state.xray ? mats.ghost : mats[state.shade==='normal'?'normal':'clay'];
+  mainMat.wireframe = state.wire && !state.xray;
+  const mesh=new THREE.Mesh(merged, mainMat);
+  mesh.castShadow=true; mesh.receiveShadow=true;
+  grp.add(mesh);
+
+  // --- X-ray: solid backplate slab (z 0..base) so its thickness is directly visible ---
+  if(state.xray && base>0){
+    const slab=boxAt(W,H,base,0,0,base/2);
+    grp.add(new THREE.Mesh(slab, mats.back));
+    grp.add(new THREE.LineSegments(new THREE.EdgesGeometry(slab),
+      new THREE.LineBasicMaterial({color:0x6effe0}))); // crisp carve-floor edge
+  }
+  // stand it upright: relief faces world +Z, so the ViewCube's FRONT shows the carved face.
+  grp.rotation.set(0,0,0);
+  grp.position.set(0, 0, -(s.boardMM)/2);
+
+  // stats
+  lastStats={W:W.toFixed(0),H:H.toFixed(0),board:s.boardMM,
+    relief:relief.toFixed(1), back:base.toFixed(1),
+    tris:(merged.attributes.position.count/3)|0};
+  window._mergedGeo=merged;
+  drawSheets(); placeRig();
+}
+function boxAt(w,h,d,cx,cy,cz){
+  const b=new THREE.BoxGeometry(w,h,d); b.translate(cx,cy,cz); return b;
+}
+// solid heightfield: top displaced surface + perimeter skirt + flat bottom at zBot — a real solid,
+// so the relief is rooted on the backplate instead of a hollow floating sheet.
+function heightfieldSolid(nx,ny,inW,inH,topZ,zBot){
+  const pos=[],uv=[],idx=[];
+  const X=i=>-inW/2+inW*(i/(nx-1)), Y=j=>inH/2-inH*(j/(ny-1)); // j=0 → +Y top
+  for(let j=0;j<ny;j++)for(let i=0;i<nx;i++){ pos.push(X(i),Y(j),topZ[j*nx+i]); uv.push(i/(nx-1),j/(ny-1)); }
+  const NT=nx*ny;
+  for(let j=0;j<ny-1;j++)for(let i=0;i<nx-1;i++){ const a=j*nx+i,b=a+1,c=a+nx,d=c+1; idx.push(a,c,b,b,c,d); }
+  for(let j=0;j<ny;j++)for(let i=0;i<nx;i++){ pos.push(X(i),Y(j),zBot); uv.push(i/(nx-1),j/(ny-1)); }
+  for(let j=0;j<ny-1;j++)for(let i=0;i<nx-1;i++){ const a=NT+j*nx+i,b=a+1,c=a+nx,d=c+1; idx.push(a,b,c,b,d,c); }
+  const T=(i,j)=>j*nx+i, B=(i,j)=>NT+j*nx+i;
+  for(let i=0;i<nx-1;i++){
+    idx.push(T(i,0),T(i+1,0),B(i,0), T(i+1,0),B(i+1,0),B(i,0));
+    idx.push(T(i+1,ny-1),T(i,ny-1),B(i+1,ny-1), T(i,ny-1),B(i,ny-1),B(i+1,ny-1)); }
+  for(let j=0;j<ny-1;j++){
+    idx.push(T(0,j+1),T(0,j),B(0,j+1), T(0,j),B(0,j),B(0,j+1));
+    idx.push(T(nx-1,j),T(nx-1,j+1),B(nx-1,j), T(nx-1,j+1),B(nx-1,j+1),B(nx-1,j)); }
+  const geo=new THREE.BufferGeometry();
+  geo.setAttribute('position',new THREE.Float32BufferAttribute(pos,3));
+  geo.setAttribute('uv',new THREE.Float32BufferAttribute(uv,2));
+  geo.setIndex(idx); geo.computeVertexNormals(); return geo;
+}
+
+// ---------- camera ----------
+function frameCamera(){
+  const box=new THREE.Box3().setFromObject(grp);
+  const sz=box.getSize(new THREE.Vector3()), ctr=box.getCenter(new THREE.Vector3());
+  const r=Math.max(sz.x,sz.y,sz.z);
+  controls.target.copy(ctr);
+  camera.up.set(0,1,0);
+  camera.position.set(ctr.x+r*0.45, ctr.y+r*0.45, ctr.z+r*1.25); // front-3/4 onto the relief face
+  if(camera.isPerspectiveCamera){ camera.near=Math.max(0.1,r/100); camera.far=r*40; }
+  else { const a=canvas.clientWidth/canvas.clientHeight||1, hh=r*1.5;
+    camera.left=-hh*a/2; camera.right=hh*a/2; camera.top=hh/2; camera.bottom=-hh/2; }
+  camera.updateProjectionMatrix();
+  placeRig();
+}
+// position the gallery rig (back wall + spotlight) relative to the current piece
+function placeRig(){
+  const box=new THREE.Box3().setFromObject(grp);
+  if(!isFinite(box.min.x)) return;
+  const ctr=box.getCenter(new THREE.Vector3()), sz=box.getSize(new THREE.Vector3());
+  const r=Math.max(sz.x,sz.y,sz.z);
+  wall.position.set(ctr.x, ctr.y, box.min.z - r*0.015); wall.scale.set(r*6, r*6, 1);
+  spot.position.set(ctr.x - r*0.6, ctr.y + r*0.95, ctr.z + r*1.5);
+  spot.target.position.copy(ctr); spot.angle=0.6; spot.penumbra=0.6;
+  spot.shadow.camera.near=r*0.2; spot.shadow.camera.far=r*6;
+}
+function setPresent(on){
+  state.present=on;
+  wall.visible=on; spot.intensity = on?11:0;
+  // kill the soft IBL/fill in present mode so the single spotlight carves real contrast
+  amb.intensity=baseLight.amb*(on?0.06:1); key.intensity=baseLight.key*(on?0.10:1);
+  fill.intensity=baseLight.fill*(on?0:1); rim.intensity=baseLight.rim*(on?0:1);
+  mats.clay.envMapIntensity = on?0.10:0.85;
+  scene.background.setHex(on?BG_DARK:BG_FLAT);
+  renderer.toneMappingExposure = on?1.0:1.05;
+  placeRig();
+}
+
+// ---------- HUD ----------
+function updateHUD(){
+  const s=lastStats; if(!s.W) return;
+  const lbl=(XPS.find(x=>Math.abs(x[1]-s.board)<0.05)||['?',s.board])[0];
+  const bad=+s.back<XPS_MIN, warn=+s.back<XPS_WARN;
+  const col=bad?'#ff7a7a':warn?'#ffcf6a':'#7db4ff';
+  const msg=bad?'  ⚠ too thin — XPS will crumble':warn?'  ⚠ thin for XPS (&lt; 1/2\")':'';
+  const sheets=sheetCount(+s.W,+s.H);
+  const sheetTxt = sheets<=1 ? `· fits 1 XPS sheet (${SHEET.label})` : `· ${sheets} XPS sheets (${SHEET.label}, glued)`;
+  document.getElementById('hud').innerHTML =
+    `plaque  ${s.W} × ${s.H} mm  (${(s.W/25.4).toFixed(1)}" × ${(s.H/25.4).toFixed(1)}")  ${sheetTxt}\n`+
+    `XPS board  ${lbl} (${s.board} mm)   carve depth ${s.relief} mm\n`+
+    `<span style="color:${col}">backplate  ${s.back} mm${msg}</span>   tris ${s.tris.toLocaleString()}`;
+}
+
+// ---------- ViewCube gizmo + view snapping ----------
+let viewAnim=null;
+function snapTo(dir){
+  if(rolled){ camera.up.set(0,1,0); rolled=false; rebuildControls(); } // unroll to a clean upright view
+  const t=controls.target, dist=camera.position.distanceTo(t);
+  let d=dir.clone().normalize();
+  // pure top/bottom is a gimbal pole for up=+Y — nudge a hair off-axis so OrbitControls stays sane
+  if(dir.x===0 && dir.z===0) d=new THREE.Vector3(0, dir.y, 0.0009).normalize();
+  viewAnim={goal:d.multiplyScalar(dist).add(t), dist};
+}
+function rollView(sgn){            // roll the current view 90° about the view axis (works in ANY view)
+  const ax=camera.position.clone().sub(controls.target).normalize();
+  camera.up.applyAxisAngle(ax, sgn*Math.PI/2);
+  const cn=v=>Math.abs(v)<0.1?0:(Math.abs(v)>0.9?Math.sign(v):v); // snap near-cardinal, keep diagonals
+  camera.up.set(cn(camera.up.x),cn(camera.up.y),cn(camera.up.z));
+  if(camera.up.lengthSq()<1e-6) camera.up.set(0,1,0);
+  camera.up.normalize();
+  rolled = Math.abs(camera.up.y) < 0.999;
+  rebuildControls();
+}
+function tickView(){
+  if(!viewAnim) return;
+  camera.position.lerp(viewAnim.goal,0.28);
+  if(camera.position.distanceTo(viewAnim.goal) < viewAnim.dist*0.002){ camera.position.copy(viewAnim.goal); viewAnim=null; }
+}
+const gz=(()=>{
+  const cvs=document.getElementById('gizmo');
+  const gr=new THREE.WebGLRenderer({canvas:cvs,alpha:true,antialias:true});
+  gr.setPixelRatio(Math.min(2,devicePixelRatio)); gr.setSize(104,104,false);
+  const gs=new THREE.Scene();
+  const gc=new THREE.OrthographicCamera(-1.7,1.7,1.7,-1.7,0.1,20);
+  const labels=['RIGHT','LEFT','TOP','BOT','FRONT','BACK']; // +X,-X,+Y,-Y,+Z,-Z
+  const tex=txt=>{ const c=document.createElement('canvas'); c.width=c.height=128; const x=c.getContext('2d');
+    x.fillStyle='#cfc9bd'; x.fillRect(0,0,128,128); x.strokeStyle='#8c8678'; x.lineWidth=6; x.strokeRect(3,3,122,122);
+    x.fillStyle='#23262c'; x.font='bold 21px ui-monospace,monospace'; x.textAlign='center'; x.textBaseline='middle';
+    x.fillText(txt,64,66); const t=new THREE.CanvasTexture(c); t.anisotropy=4; return t; };
+  const mats=labels.map(l=>new THREE.MeshBasicMaterial({map:tex(l)}));
+  const cube=new THREE.Mesh(new THREE.BoxGeometry(2,2,2),mats); gs.add(cube);
+  gs.add(new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(2,2,2)),
+    new THREE.LineBasicMaterial({color:0x55504a})));
+  // zone highlight pool: up to 3 cell-quads light the hovered face/edge/corner (Fusion 3×3 grid, wraps faces)
+  const hl=[0,1,2].map(()=>{ const m=new THREE.Mesh(new THREE.PlaneGeometry(0.6,0.6),
+    new THREE.MeshBasicMaterial({color:0x6fb2ff,transparent:true,opacity:0.6,depthWrite:false}));
+    m.renderOrder=2; m.visible=false; gs.add(m); return m; });
+  function setHover(d){ hl.forEach(m=>m.visible=false); if(!d) return;
+    const c=[d.x,d.y,d.z], axes=[0,1,2].filter(a=>c[a]!==0);
+    axes.forEach((ax,i)=>{ const s=c[ax], m=hl[i], ip=[0,1,2].filter(a=>a!==ax);
+      const pos=[0,0,0]; pos[ax]=s*1.005; pos[ip[0]]=c[ip[0]]*0.667; pos[ip[1]]=c[ip[1]]*0.667;
+      m.position.fromArray(pos); m.rotation.set(0,0,0);
+      if(ax===0)m.rotation.y=s>0?Math.PI/2:-Math.PI/2; else if(ax===1)m.rotation.x=s>0?-Math.PI/2:Math.PI/2;
+      else if(s<0)m.rotation.y=Math.PI; m.visible=true; });
+  }
+  const ray=new THREE.Raycaster();
+  cvs.style.touchAction='none';
+  const ndcOf=ev=>{ const r=cvs.getBoundingClientRect();
+    return new THREE.Vector2(((ev.clientX-r.left)/r.width)*2-1,-((ev.clientY-r.top)/r.height)*2+1); };
+  // --- Fusion-style: click a face/edge/corner to snap, OR drag the cube to orbit freely ---
+  function dirAt(ev){ ray.setFromCamera(ndcOf(ev),gc);
+    const h=ray.intersectObject(cube,false)[0]; if(!h) return null;
+    const p=h.point, s=v=>Math.abs(v)>0.55?Math.sign(v):0;          // face=1 axis, edge=2, corner=3
+    const d=new THREE.Vector3(s(p.x),s(p.y),s(p.z)); return d.length()>0?d:null; }
+  function orbitBy(dx,dy){                                           // grab-and-spin the model
+    const t=controls.target, off=camera.position.clone().sub(t), r=off.length(), k=0.011;
+    let theta=Math.atan2(off.x,off.z), phi=Math.acos(THREE.MathUtils.clamp(off.y/r,-1,1));
+    theta-=dx*k; phi=THREE.MathUtils.clamp(phi-dy*k,0.04,Math.PI-0.04);
+    off.set(r*Math.sin(phi)*Math.sin(theta), r*Math.cos(phi), r*Math.sin(phi)*Math.cos(theta));
+    camera.position.copy(t).add(off);
+  }
+  let down=null, dragging=false, last=null;
+  cvs.addEventListener('pointerdown',ev=>{ down={x:ev.clientX,y:ev.clientY}; last={x:ev.clientX,y:ev.clientY};
+    dragging=false; viewAnim=null; setHover(null); cvs.setPointerCapture(ev.pointerId); });
+  cvs.addEventListener('pointermove',ev=>{
+    if(down){
+      if(!dragging && Math.hypot(ev.clientX-down.x,ev.clientY-down.y)>4){ dragging=true; cvs.style.cursor='grabbing'; }
+      if(dragging){ orbitBy(ev.clientX-last.x, ev.clientY-last.y); last={x:ev.clientX,y:ev.clientY}; }
+    } else setHover(dirAt(ev));
+  });
+  cvs.addEventListener('pointerup',ev=>{ cvs.releasePointerCapture(ev.pointerId);
+    if(down && !dragging){ const d=dirAt(ev); if(d) snapTo(d); } down=null; dragging=false; cvs.style.cursor='grab'; });
+  cvs.addEventListener('pointerleave',()=>{ if(!down) setHover(null); });
+  cvs.style.cursor='grab';
+  return { render(){ const v=camera.position.clone().sub(controls.target).normalize();
+    gc.position.copy(v.multiplyScalar(6)); gc.up.copy(camera.up); gc.lookAt(0,0,0); gr.render(gs,gc); } };
+})();
+document.getElementById('homeview').onclick=()=>{ viewAnim=null;
+  if(rolled){ camera.up.set(0,1,0); rolled=false; rebuildControls(); } frameCamera(); };
+document.getElementById('rollccw').onclick=()=>rollView(+1);
+document.getElementById('rollcw').onclick =()=>rollView(-1);
+
+// ---------- render loop ----------
+function loop(){ requestAnimationFrame(loop); tickView(); controls.update(); resize(); updateHUD(); renderer.render(scene,camera); gz.render(); }
+function resize(){
+  const w=canvas.clientWidth, h=canvas.clientHeight;
+  if(canvas.width!==w*renderer.getPixelRatio()||canvas.height!==h*renderer.getPixelRatio()){
+    renderer.setSize(w,h,false); const a=w/h;
+    if(camera.isPerspectiveCamera){ camera.aspect=a; }
+    else { const ht=camera.top-camera.bottom; camera.left=-ht*a/2; camera.right=ht*a/2; }
+    camera.updateProjectionMatrix();
+  }
+}
+
+// ================= PANEL / CONTROLS =================
+const inputs={};
+function buildPanel(){
+  const p=document.getElementById('panel'); p.innerHTML='';
+  const sec=(t)=>{const h=document.createElement('h2');h.textContent=t;p.appendChild(h);};
+
+  sec('Form & size');
+  p.appendChild(slider('widthMM'));
+  p.appendChild(boardSelect());
+  p.appendChild(slider('backplateMM'));
+  buildSheetViz(p);
+  sec('Frame');
+  ['frameThickMM','frameExtraMM','gapMM'].forEach(k=>p.appendChild(slider(k)));
+  sec('Depth map → height');
+  ['gamma','contrast','floor','blur'].forEach(k=>p.appendChild(slider(k)));
+  p.appendChild(check('invert','Invert depth (flip near/far)'));
+  p.appendChild(check('blackToFloor','Collapse background to flat floor'));
+  sec('Mesh & display');
+  p.appendChild(slider('res'));
+  p.appendChild(check('wire','Wireframe'));
+  p.appendChild(shadeToggle());
+
+  sec('Source');
+  p.appendChild(upscaleToggle());
+
+  sec('Inspect');
+  p.appendChild(perspToggle());
+  p.appendChild(presentToggle());
+  p.appendChild(check('xray','X-ray — ghost relief, show backplate slab'));
+  const xn=document.createElement('div'); xn.className='note';
+  xn.textContent='Teal slab = solid backplate. Click RIGHT/LEFT on the cube for a clean side section to read its thickness.';
+  p.appendChild(xn);
+
+  sec('Export / state');
+  const br=document.createElement('div'); br.className='btnrow';
+  br.innerHTML=`<button id="undo">↶ Undo</button><button id="redo">↷ Redo</button>
+    <button id="reset">Reset</button><button id="copy">Copy JSON</button>
+    <button id="stl" class="pri">Download STL</button>`;
+  p.appendChild(br);
+  const ta=document.createElement('textarea'); ta.id='json'; ta.spellcheck=false; p.appendChild(ta);
+  const note=document.createElement('div'); note.className='note';
+  note.textContent='Paste a settings JSON above and press ⏎ to load it. Drag = orbit · scroll = zoom.';
+  p.appendChild(note);
+
+  br.querySelector('#reset').onclick=()=>{state=structuredClone(DEFAULTS);syncInputs();rebuild();pushHist();};
+  br.querySelector('#copy').onclick=()=>{ta.value=JSON.stringify(state,null,2);ta.select();document.execCommand('copy');};
+  br.querySelector('#stl').onclick=exportSTL;
+  br.querySelector('#undo').onclick=undo;
+  br.querySelector('#redo').onclick=redo;
+  ta.addEventListener('keydown',e=>{ if(e.key==='Enter'&&(e.metaKey||e.ctrlKey||!e.shiftKey)){
+    e.preventDefault(); try{Object.assign(state,JSON.parse(ta.value));syncInputs();rebuild();pushHist();}catch(err){ta.value='// invalid JSON';}}});
+
+  buildCrop(p);
+  syncInputs(); refreshJSON();
+}
+
+// ---------- crop widget (draggable rectangle on the source depth map) ----------
+// ---------- XPS sheet-usage visualizer (orthographic wireframe of the plaque tiled by 4×8 sheets) ----------
+let sheetCv=null;
+function buildSheetViz(p){
+  const h=document.createElement('h2'); h.textContent='XPS sheet layout'; p.appendChild(h);
+  const cw=264, ch=150;
+  sheetCv=document.createElement('canvas'); sheetCv.width=cw; sheetCv.height=ch;
+  sheetCv.style.cssText=`width:${cw}px;height:${ch}px;display:block;border:1px solid var(--line);border-radius:4px;background:#0a0c10`;
+  p.appendChild(sheetCv);
+  drawSheets();
+}
+function drawSheets(){
+  if(!sheetCv||!lastStats.W) return;
+  const ctx=sheetCv.getContext('2d'), cw=sheetCv.width, ch=sheetCv.height;
+  ctx.clearRect(0,0,cw,ch);
+  const W=+lastStats.W, H=+lastStats.H, T=+lastStats.board;
+  const L=sheetLayout(W,H);
+  // axonometric projection: front face in XY, depth along a small iso vector
+  const pad=16, dax=26, day=-15; // depth vector (px) for the slab thickness illusion
+  const s=Math.min((cw-pad*2-Math.abs(dax))/W, (ch-pad*2-Math.abs(day))/H);
+  const ox=pad+Math.max(0,-dax), oy=ch-pad-Math.max(0,-day);
+  const FX=x=>ox + x*s,           FY=y=>oy - y*s;             // front face (z=0)
+  const BX=x=>FX(x)+dax,          BY=y=>FY(y)+day;            // back face (z=T)
+  const line=(x1,y1,x2,y2,col,w)=>{ ctx.strokeStyle=col; ctx.lineWidth=w||1; ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke(); };
+  // back rectangle (faint)
+  const br=[[0,0],[W,0],[W,H],[0,H]];
+  ctx.strokeStyle='#3a4150'; ctx.lineWidth=1; ctx.beginPath();
+  ctx.moveTo(BX(0),BY(0)); ctx.lineTo(BX(W),BY(0)); ctx.lineTo(BX(W),BY(H)); ctx.lineTo(BX(0),BY(H)); ctx.closePath(); ctx.stroke();
+  // connect corners
+  br.forEach(([x,y])=>line(FX(x),FY(y),BX(x),BY(y),'#3a4150',1));
+  // sheet seams on the front face (used grid)
+  ctx.strokeStyle='#39506e'; ctx.setLineDash([3,3]);
+  for(let c=1;c<L.cols;c++){ const x=Math.min(W,c*L.sw); line(FX(x),FY(0),FX(x),FY(H),'#39506e',1); }
+  for(let r=1;r<L.rows;r++){ const y=Math.min(H,r*L.sh); line(FX(0),FY(y),FX(W),FY(y),'#39506e',1); }
+  ctx.setLineDash([]);
+  // shade wasted area of the last partial col/row (light hatch)
+  const usedW=L.cols*L.sw, usedH=L.rows*L.sh;
+  // front outline (plaque footprint) — bright
+  ctx.strokeStyle='#7db4ff'; ctx.lineWidth=1.8; ctx.beginPath();
+  ctx.moveTo(FX(0),FY(0)); ctx.lineTo(FX(W),FY(0)); ctx.lineTo(FX(W),FY(H)); ctx.lineTo(FX(0),FY(H)); ctx.closePath(); ctx.stroke();
+  // label
+  ctx.fillStyle='#9aa0aa'; ctx.font='10px ui-monospace,monospace'; ctx.textBaseline='top';
+  ctx.fillText(`${L.count} sheet${L.count>1?'s':''} (${SHEET.label})  ·  ${L.cols}×${L.rows} grid  ·  ${Math.round(L.util*100)}% used`, 6, 5);
+}
+let cropCv=null, cropRAF=0;
+function scheduleRebuild(){ if(cropRAF) return; cropRAF=requestAnimationFrame(()=>{cropRAF=0; rebuild();}); }
+function buildCrop(p){
+  const h=document.createElement('h2'); h.textContent='Crop source'; p.appendChild(h);
+  const cw=264, ch=Math.round(cw*IH/IW);
+  cropCv=document.createElement('canvas'); cropCv.width=cw; cropCv.height=ch;
+  cropCv.style.cssText=`width:${cw}px;height:${ch}px;display:block;border:1px solid var(--line);border-radius:4px;cursor:crosshair;touch-action:none`;
+  p.appendChild(cropCv);
+  const rb=document.createElement('div'); rb.className='btnrow';
+  rb.innerHTML='<button id="cropreset">Reset crop</button>';
+  p.appendChild(rb);
+  const cn=document.createElement('div'); cn.className='note';
+  cn.textContent='Drag inside to move · drag an edge/corner to resize. The relief uses only this region; plaque aspect follows it.';
+  p.appendChild(cn);
+  rb.querySelector('#cropreset').onclick=()=>{ state.crop={x:0,y:0,w:1,h:1}; drawCrop(); rebuild(); refreshJSON(); pushHist(); };
+
+  const M=8, minF=0.04; let down=null, mode=null;
+  const px=ev=>{ const r=cropCv.getBoundingClientRect(); return [ev.clientX-r.left, ev.clientY-r.top]; };
+  function hit(x,y){
+    const rx=state.crop.x*cw, ry=state.crop.y*ch, rw=state.crop.w*cw, rh=state.crop.h*ch;
+    const L=Math.abs(x-rx)<M, R=Math.abs(x-(rx+rw))<M, T=Math.abs(y-ry)<M, B=Math.abs(y-(ry+rh))<M;
+    const inside=x>rx-M&&x<rx+rw+M&&y>ry-M&&y<ry+rh+M;
+    if(L||R||T||B) return {l:L,r:R,t:T,b:B};
+    if(inside) return {move:true};
+    return null;
+  }
+  cropCv.addEventListener('pointerdown',ev=>{ const [x,y]=px(ev); mode=hit(x,y)||{move:true};
+    down={x,y,crop:{...state.crop}}; cropCv.setPointerCapture(ev.pointerId); });
+  cropCv.addEventListener('pointermove',ev=>{ const [x,y]=px(ev);
+    if(!down){ const hh=hit(x,y); cropCv.style.cursor = !hh?'crosshair' : hh.move?'move'
+        : (hh.l&&hh.t)||(hh.r&&hh.b)?'nwse-resize' : (hh.r&&hh.t)||(hh.l&&hh.b)?'nesw-resize'
+        : (hh.l||hh.r)?'ew-resize':'ns-resize'; return; }
+    const c0=down.crop, minPx=minF*cw, minPy=minF*ch;
+    let l=c0.x*cw, r=(c0.x+c0.w)*cw, t=c0.y*ch, b=(c0.y+c0.h)*ch;
+    if(mode.move){ const w=r-l,ht=b-t; l=clamp(l+(x-down.x),0,cw-w); t=clamp(t+(y-down.y),0,ch-ht); r=l+w; b=t+ht; }
+    else { if(mode.l)l=clamp(x,0,r-minPx); if(mode.r)r=clamp(x,l+minPx,cw);
+           if(mode.t)t=clamp(y,0,b-minPy); if(mode.b)b=clamp(y,t+minPy,ch); }
+    state.crop={x:l/cw,y:t/ch,w:(r-l)/cw,h:(b-t)/ch};
+    drawCrop(); scheduleRebuild(); refreshJSON(); histDebounced();
+  });
+  const end=ev=>{ if(down){ cropCv.releasePointerCapture?.(ev.pointerId); down=null; mode=null; } };
+  cropCv.addEventListener('pointerup',end); cropCv.addEventListener('pointercancel',end);
+  drawCrop();
+}
+function clamp(v,a,b){ return Math.max(a,Math.min(b,v)); }
+function drawCrop(){
+  if(!cropCv||!img.complete) return;
+  const ctx=cropCv.getContext('2d'), cw=cropCv.width, ch=cropCv.height;
+  ctx.clearRect(0,0,cw,ch); ctx.drawImage(img,0,0,cw,ch);
+  const rx=state.crop.x*cw, ry=state.crop.y*ch, rw=state.crop.w*cw, rh=state.crop.h*ch;
+  ctx.fillStyle='rgba(8,10,14,0.62)';
+  ctx.fillRect(0,0,cw,ry); ctx.fillRect(0,ry+rh,cw,ch-(ry+rh));
+  ctx.fillRect(0,ry,rx,rh); ctx.fillRect(rx+rw,ry,cw-(rx+rw),rh);
+  ctx.strokeStyle='#7db4ff'; ctx.lineWidth=1.5; ctx.strokeRect(rx+0.75,ry+0.75,Math.max(0,rw-1.5),Math.max(0,rh-1.5));
+  ctx.fillStyle='#7db4ff'; const hs=3.5;
+  [[rx,ry],[rx+rw,ry],[rx,ry+rh],[rx+rw,ry+rh]].forEach(([x,y])=>ctx.fillRect(x-hs,y-hs,hs*2,hs*2));
+}
+function slider(k){
+  const m=META[k], wrap=document.createElement('div'); wrap.className='row';
+  const lab=document.createElement('label'); lab.innerHTML=`<span>${m.label}</span>`;
+  const r=document.createElement('input'); r.type='range'; r.min=m.min; r.max=m.max; r.step=m.step;
+  const n=document.createElement('input'); n.type='number'; n.min=m.min; n.max=m.max; n.step=m.step;
+  inputs[k]={r,n};
+  r.addEventListener('input',()=>{state[k]=+r.value; if(document.activeElement!==n)n.value=r.value; rebuild(); refreshJSON(); histDebounced();});
+  n.addEventListener('input',()=>{state[k]=+n.value; r.value=n.value; rebuild(); refreshJSON(); histDebounced();});
+  n.addEventListener('change',()=>{let v=Math.min(m.max,Math.max(m.min,+n.value||0));state[k]=v;n.value=v;r.value=v;rebuild();refreshJSON();histDebounced();});
+  wrap.append(lab,r,n); return wrap;
+}
+function boardSelect(){
+  const wrap=document.createElement('div');
+  const lab=document.createElement('label'); lab.style.cssText='font-size:11px;color:var(--mut);display:block;margin:2px 0 4px';
+  lab.textContent='XPS board thickness (nominal)';
+  const row=document.createElement('div'); row.className='btnrow';
+  inputs._board=[];
+  XPS.forEach(([t,mm])=>{
+    const b=document.createElement('button'); b.textContent=t; b.dataset.mm=mm;
+    b.style.cssText='flex:0 0 auto;padding:5px 7px';
+    b.onclick=()=>{state.boardMM=mm; markBoard(); rebuild(); refreshJSON(); pushHist();};
+    inputs._board.push(b); row.appendChild(b);
+  });
+  const note=document.createElement('div'); note.className='note';
+  note.textContent='* 4″ = two 2″ boards laminated. Carve depth is capped at board − 1/4″ skin.';
+  wrap.append(lab,row,note); return wrap;
+}
+function markBoard(){ inputs._board?.forEach(b=>{
+  const on=Math.abs(+b.dataset.mm-state.boardMM)<0.05;
+  b.style.background=on?'var(--accent)':'#1b1f27'; b.style.color=on?'#06101f':'var(--ink)';
+  b.style.borderColor=on?'var(--accent)':'var(--line)'; b.style.fontWeight=on?'700':'400'; }); }
+function check(k,label){
+  const l=document.createElement('label'); l.className='chk';
+  const c=document.createElement('input'); c.type='checkbox'; inputs[k]={c};
+  c.addEventListener('change',()=>{state[k]=c.checked;rebuild();refreshJSON();pushHist();});
+  l.append(c,document.createTextNode(label)); return l;
+}
+let upChk=null, upNote=null;
+function upscaleToggle(){
+  const l=document.createElement('label'); l.className='chk';
+  upChk=document.createElement('input'); upChk.type='checkbox'; upChk.checked=state.upscaled;
+  upChk.addEventListener('change',()=>{ state.upscaled=upChk.checked;
+    setActive(state.upscaled&&srcUp?srcUp:srcOrig); rebuild(); refreshJSON(); pushHist(); });
+  l.append(upChk,document.createTextNode('Upscaled source (4× UltraSharp)'));
+  const w=document.createElement('div'); w.appendChild(l);
+  upNote=document.createElement('div'); upNote.className='note'; w.appendChild(upNote);
+  markUpscale(!!srcUp); return w;
+}
+function markUpscale(ready){
+  if(!upChk) return;
+  upChk.disabled=!ready;
+  if(upNote) upNote.textContent = ready
+    ? `Upscaled ${srcUp?srcUp.W+'×'+srcUp.H:''} vs original ${srcOrig.W}×${srcOrig.H} — sharper figure edges, steeper walls.`
+    : 'Baking depth-up.jpg… toggle enables when ready.';
+}
+let presChk=null;
+function presentToggle(){
+  const l=document.createElement('label'); l.className='chk';
+  presChk=document.createElement('input'); presChk.type='checkbox'; presChk.checked=state.present;
+  presChk.addEventListener('change',()=>{ setPresent(presChk.checked); refreshJSON(); pushHist(); });
+  l.append(presChk,document.createTextNode('Presentation render (gallery light + dark wall)')); return l;
+}
+function perspToggle(){
+  const l=document.createElement('label'); l.className='chk';
+  const c=document.createElement('input'); c.type='checkbox'; c.checked=!persp;
+  c.addEventListener('change',()=>setProjection(!c.checked)); // checked = orthographic
+  l.append(c,document.createTextNode('Orthographic (CAD) — off = perspective')); return l;
+}
+function shadeToggle(){
+  const l=document.createElement('label'); l.className='chk';
+  const c=document.createElement('input'); c.type='checkbox'; inputs.shade={c};
+  c.addEventListener('change',()=>{state.shade=c.checked?'normal':'clay';rebuild();refreshJSON();pushHist();});
+  l.append(c,document.createTextNode('Normal-shading (inspect slopes)')); return l;
+}
+function syncInputs(){
+  for(const k in META){ const v=state[k]; inputs[k].r.value=v; inputs[k].n.value=v; }
+  inputs.invert.c.checked=state.invert; inputs.blackToFloor.c.checked=state.blackToFloor;
+  inputs.wire.c.checked=state.wire; inputs.shade.c.checked=state.shade==='normal';
+  if(!state.crop) state.crop={x:0,y:0,w:1,h:1};
+  if(upChk) upChk.checked=state.upscaled;
+  if(presChk) presChk.checked=state.present;
+  setActive(state.upscaled&&srcUp?srcUp:srcOrig);
+  setPresent(state.present);
+  markBoard(); syncBounds(); if(cropCv) drawCrop();
+}
+// carve depth & frame can't exceed the chosen board; propagate bounds + clamp
+function syncBounds(){
+  const bpMax=Math.max(0, state.boardMM - MIN_RELIEF);  // keep ≥1mm of relief
+  const bi=inputs.backplateMM; if(bi){ bi.r.max=bpMax; bi.n.max=bpMax;
+    if(state.backplateMM>bpMax){ state.backplateMM=bpMax; bi.r.value=bpMax; bi.n.value=bpMax; } }
+  const fi=inputs.frameExtraMM, feMin=-state.boardMM;
+  if(fi){ fi.r.min=feMin; fi.n.min=feMin; fi.r.max=0; fi.n.max=0;
+    state.frameExtraMM=Math.max(feMin,Math.min(0,state.frameExtraMM));
+    fi.r.value=state.frameExtraMM; fi.n.value=state.frameExtraMM; }
+}
+function refreshJSON(){ const ta=document.getElementById('json'); if(ta&&document.activeElement!==ta) ta.value=JSON.stringify(state,null,2); }
+
+// ---------- history ----------
+let hist=[], hi=-1, ht=null;
+function pushHist(){ const s=JSON.stringify(state);
+  if(hist[hi]===s) return; hist=hist.slice(0,hi+1); hist.push(s); if(hist.length>120)hist.shift(); hi=hist.length-1; }
+function histDebounced(){ clearTimeout(ht); ht=setTimeout(pushHist,350); }
+function undo(){ if(hi>0){hi--;state=JSON.parse(hist[hi]);syncInputs();rebuild();refreshJSON();} }
+function redo(){ if(hi<hist.length-1){hi++;state=JSON.parse(hist[hi]);syncInputs();rebuild();refreshJSON();} }
+addEventListener('keydown',e=>{
+  if(/input|textarea/i.test(document.activeElement?.tagName)) return;
+  if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='z'){ e.preventDefault(); e.shiftKey?redo():undo(); }
+  if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='y'){ e.preventDefault(); redo(); }
+});
+
+// ---------- STL ----------
+function exportSTL(){
+  const geo=window._mergedGeo; if(!geo) return;
+  const m=new THREE.Mesh(geo.clone()); // already in mm, z-up — good for CNC
+  const stl=new STLExporter().parse(m,{binary:true});
+  const blob=new Blob([stl],{type:'model/stl'});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
+  a.download=`relief_${state.widthMM}x${(state.widthMM*IH/IW).toFixed(0)}mm.stl`; a.click();
+}
+
+window.addEventListener('resize',resize);
+</script>
+</body>
+</html>
