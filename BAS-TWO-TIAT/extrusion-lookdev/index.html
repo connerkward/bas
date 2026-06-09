@@ -104,7 +104,7 @@ const DEFAULTS = {
   wire: false,
   shade: 'clay',       // clay | normal | matcap
   xray: false,         // ghost the relief + show the solid backplate slab
-  present: false,      // gallery presentation render rig (spotlight + dark wall + shadows)
+  present: false,      // gallery backdrop (dark wall + dark background; lit by the studio lights)
   upscaled: false,     // sample the 4×-UltraSharp upscaled source instead of the original
   crop: {x:0, y:0, w:1, h:1},  // normalized crop of the source depth map
   // --- look: material + lighting (live, no geometry rebuild) ---
@@ -192,17 +192,11 @@ function applyMaterial(){
   mats.clay.roughness=state.matRough; mats.clay.metalness=state.matMetal;
   mats.clay.needsUpdate=true;
 }
-function applyLights(){
-  const on=state.present; // presentation rig dims the soft studio lights to let the spot carve contrast
-  amb.intensity   = state.lightAmb   * (on?0.06:1);
-  key.intensity   = state.lightAbove * (on?0.10:1);
-  under.intensity = state.lightBelow * (on?0.10:1);
-  fill.intensity  = baseLight.fill   * (on?0:1);
-  rim.intensity   = baseLight.rim    * (on?0:1);
+function applyLights(){ // studio lights apply in all modes; the user drives them
+  amb.intensity=state.lightAmb; key.intensity=state.lightAbove; under.intensity=state.lightBelow;
+  fill.intensity=baseLight.fill; rim.intensity=baseLight.rim;
 }
-// gallery presentation rig (off until toggled): warm raking spotlight + dark back wall + shadows
-const spot = new THREE.SpotLight(0xffe9c7, 0, 0, 0.55, 0.65); spot.decay=0; spot.castShadow=true;
-spot.shadow.mapSize.set(2048,2048); spot.shadow.bias=-0.0004; scene.add(spot); scene.add(spot.target);
+// gallery presentation backdrop (off until toggled): dark back wall + dark background
 const wall = new THREE.Mesh(new THREE.PlaneGeometry(1,1),
   new THREE.MeshStandardMaterial({color:0x15171c, roughness:0.96, metalness:0}));
 wall.receiveShadow=true; wall.visible=false; scene.add(wall);
@@ -387,23 +381,17 @@ function frameCamera(){
   camera.updateProjectionMatrix();
   placeRig();
 }
-// position the gallery rig (back wall + spotlight) relative to the current piece
+// position the gallery back wall relative to the current piece
 function placeRig(){
   const box=new THREE.Box3().setFromObject(grp);
   if(!isFinite(box.min.x)) return;
   const ctr=box.getCenter(new THREE.Vector3()), sz=box.getSize(new THREE.Vector3());
   const r=Math.max(sz.x,sz.y,sz.z);
   wall.position.set(ctr.x, ctr.y, box.min.z - r*0.015); wall.scale.set(r*6, r*6, 1);
-  spot.position.set(ctr.x - r*0.6, ctr.y + r*0.95, ctr.z + r*1.5);
-  spot.target.position.copy(ctr); spot.angle=0.6; spot.penumbra=0.6;
-  spot.shadow.camera.near=r*0.2; spot.shadow.camera.far=r*6;
 }
 function setPresent(on){
   state.present=on;
-  wall.visible=on; spot.intensity = on?11:0;
-  // kill the soft IBL/fill in present mode so the single spotlight carves real contrast
-  applyLights();
-  mats.clay.envMapIntensity = on?0.10:0.85;
+  wall.visible=on; // dark backdrop only — lit by the studio lights you control above
   scene.background.setHex(on?BG_DARK:BG_FLAT);
   renderer.toneMappingExposure = on?1.0:1.05;
   placeRig();
@@ -553,7 +541,7 @@ function buildPanel(){
   p.appendChild(liveSlider('lightAbove',0,6,0.05,'From above (key)', applyLights));
   p.appendChild(liveSlider('lightBelow',0,6,0.05,'From below (up-light)', applyLights));
   const ln=document.createElement('div'); ln.className='note';
-  ln.textContent='Studio lights. Presentation render overrides these with its single raking spotlight.';
+  ln.textContent='Studio lights apply in every mode, including the gallery backdrop.';
   p.appendChild(ln);
 
   sec('Mesh & display');
@@ -760,7 +748,7 @@ function presentToggle(){
   const l=document.createElement('label'); l.className='chk';
   presChk=document.createElement('input'); presChk.type='checkbox'; presChk.checked=state.present;
   presChk.addEventListener('change',()=>{ setPresent(presChk.checked); refreshJSON(); pushHist(); });
-  l.append(presChk,document.createTextNode('Presentation render (gallery light + dark wall)')); return l;
+  l.append(presChk,document.createTextNode('Gallery backdrop (dark wall + background)')); return l;
 }
 function perspToggle(){
   const l=document.createElement('label'); l.className='chk';
