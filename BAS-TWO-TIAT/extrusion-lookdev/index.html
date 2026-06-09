@@ -107,7 +107,27 @@ const DEFAULTS = {
   present: false,      // gallery presentation render rig (spotlight + dark wall + shadows)
   upscaled: false,     // sample the 4×-UltraSharp upscaled source instead of the original
   crop: {x:0, y:0, w:1, h:1},  // normalized crop of the source depth map
+  // --- look: material + lighting (live, no geometry rebuild) ---
+  matColor: '#c9bfa9', // relief surface color
+  matRough: 0.86,      // surface roughness 0..1
+  matMetal: 0.0,       // metalness 0..1
+  lightAmb: 0.35,      // ambient (flat fill from everywhere)
+  lightAbove:2.2,      // key light from above
+  lightBelow:0.0,      // up-light from below (rakes underside of forms)
 };
+// material picker presets (color + roughness), stone palette
+const MATS = [
+  ['Clay',        '#c9bfa9', 0.86, 0.0],
+  ['XPS Foam',    '#e9e6df', 0.95, 0.0],
+  ['Sandstone',   '#c9a36a', 0.92, 0.0],
+  ['Travertine',  '#caab8c', 0.90, 0.0],
+  ['Red Sandstone','#9c5536',0.88, 0.0],
+  ['Limestone',   '#d6cfb8', 0.95, 0.0],
+  ['Granite',     '#5a564f', 0.85, 0.0],
+  ['Basalt',      '#2a2825', 0.78, 0.0],
+  ['Bronze',      '#9a6b2e', 0.35, 0.9],
+  ['Plaster',     '#efe9df', 0.88, 0.0],
+];
 const META = {
   widthMM:    {min:50,  max:4877, step:5,    label:'Plaque width (mm)'}, // up to ~2 sheet-lengths
   backplateMM:{min:0,   max:101.6,step:0.5,  label:'Backplate thickness (mm)'},
@@ -161,10 +181,25 @@ function rebuildControls(){
 }
 
 const amb = new THREE.AmbientLight(0xffffff, 0.35); scene.add(amb);
-const key = new THREE.DirectionalLight(0xffffff, 2.2); key.position.set(-0.6,1,0.7); scene.add(key);
+const key = new THREE.DirectionalLight(0xffffff, 2.2); key.position.set(-0.6,1,0.7); scene.add(key);    // from above
 const fill = new THREE.DirectionalLight(0x88aaff, 0.6); fill.position.set(1,0.4,0.5); scene.add(fill);
 const rim = new THREE.DirectionalLight(0xffffff, 0.7); rim.position.set(0.2,0.6,-1); scene.add(rim);
-const baseLight={amb:0.35,key:2.2,fill:0.6,rim:0.7};
+const under= new THREE.DirectionalLight(0xffffff, 0.0); under.position.set(0,-1,0.35); scene.add(under); // from below
+const baseLight={fill:0.6,rim:0.7};
+// push state's material + light values onto the live objects (no geometry rebuild)
+function applyMaterial(){
+  mats.clay.color.set(state.matColor);
+  mats.clay.roughness=state.matRough; mats.clay.metalness=state.matMetal;
+  mats.clay.needsUpdate=true;
+}
+function applyLights(){
+  const on=state.present; // presentation rig dims the soft studio lights to let the spot carve contrast
+  amb.intensity   = state.lightAmb   * (on?0.06:1);
+  key.intensity   = state.lightAbove * (on?0.10:1);
+  under.intensity = state.lightBelow * (on?0.10:1);
+  fill.intensity  = baseLight.fill   * (on?0:1);
+  rim.intensity   = baseLight.rim    * (on?0:1);
+}
 // gallery presentation rig (off until toggled): warm raking spotlight + dark back wall + shadows
 const spot = new THREE.SpotLight(0xffe9c7, 0, 0, 0.55, 0.65); spot.decay=0; spot.castShadow=true;
 spot.shadow.mapSize.set(2048,2048); spot.shadow.bias=-0.0004; scene.add(spot); scene.add(spot.target);
@@ -367,8 +402,7 @@ function setPresent(on){
   state.present=on;
   wall.visible=on; spot.intensity = on?11:0;
   // kill the soft IBL/fill in present mode so the single spotlight carves real contrast
-  amb.intensity=baseLight.amb*(on?0.06:1); key.intensity=baseLight.key*(on?0.10:1);
-  fill.intensity=baseLight.fill*(on?0:1); rim.intensity=baseLight.rim*(on?0:1);
+  applyLights();
   mats.clay.envMapIntensity = on?0.10:0.85;
   scene.background.setHex(on?BG_DARK:BG_FLAT);
   renderer.toneMappingExposure = on?1.0:1.05;
@@ -508,6 +542,20 @@ function buildPanel(){
   ['gamma','contrast','floor','blur'].forEach(k=>p.appendChild(slider(k)));
   p.appendChild(check('invert','Invert depth (flip near/far)'));
   p.appendChild(check('blackToFloor','Collapse background to flat floor'));
+  sec('Material');
+  p.appendChild(colorRow('matColor','Color', applyMaterial));
+  p.appendChild(liveSlider('matRough',0,1,0.01,'Roughness', applyMaterial));
+  p.appendChild(liveSlider('matMetal',0,1,0.01,'Metalness', applyMaterial));
+  p.appendChild(matPresets());
+
+  sec('Lighting');
+  p.appendChild(liveSlider('lightAmb',0,2,0.01,'Ambient', applyLights));
+  p.appendChild(liveSlider('lightAbove',0,6,0.05,'From above (key)', applyLights));
+  p.appendChild(liveSlider('lightBelow',0,6,0.05,'From below (up-light)', applyLights));
+  const ln=document.createElement('div'); ln.className='note';
+  ln.textContent='Studio lights. Presentation render overrides these with its single raking spotlight.';
+  p.appendChild(ln);
+
   sec('Mesh & display');
   p.appendChild(slider('res'));
   p.appendChild(check('wire','Wireframe'));
@@ -726,15 +774,61 @@ function shadeToggle(){
   c.addEventListener('change',()=>{state.shade=c.checked?'normal':'clay';rebuild();refreshJSON();pushHist();});
   l.append(c,document.createTextNode('Normal-shading (inspect slopes)')); return l;
 }
+// ---- live (look) controls: update material/lights directly, no geometry rebuild ----
+const live={}; // key -> {r,n} or {c} for color
+function liveSlider(key,min,max,step,label,apply){
+  const wrap=document.createElement('div'); wrap.className='row';
+  const lab=document.createElement('label'); lab.innerHTML=`<span>${label}</span>`;
+  const r=document.createElement('input'); r.type='range'; r.min=min; r.max=max; r.step=step;
+  const n=document.createElement('input'); n.type='number'; n.min=min; n.max=max; n.step=step;
+  live[key]={r,n};
+  const set=v=>{ v=Math.min(max,Math.max(min,v)); state[key]=v; apply(); refreshJSON(); histDebounced(); };
+  r.addEventListener('input',()=>{ if(document.activeElement!==n)n.value=r.value; set(+r.value); });
+  n.addEventListener('input',()=>{ r.value=n.value; set(+n.value); });
+  wrap.append(lab,r,n); return wrap;
+}
+function colorRow(key,label,apply){
+  const wrap=document.createElement('div'); wrap.className='row';
+  const lab=document.createElement('label');
+  lab.innerHTML=`<span>${label}</span><span class="stat" style="font-size:9px"></span>`;
+  const c=document.createElement('input'); c.type='color'; c.style.cssText='width:100%;height:22px;padding:0;background:#0a0c10;border:1px solid var(--line);border-radius:4px;cursor:pointer';
+  live[key]={c, lab:lab.querySelector('.stat')};
+  c.addEventListener('input',()=>{ state[key]=c.value; live[key].lab.textContent=c.value.toUpperCase(); apply(); refreshJSON(); histDebounced(); });
+  wrap.append(lab,c); return wrap;
+}
+function matPresets(){
+  const lab=document.createElement('label'); lab.style.cssText='font-size:11px;color:var(--mut);display:block;margin:2px 0 4px';
+  lab.textContent='Material preset';
+  const row=document.createElement('div'); row.className='btnrow';
+  MATS.forEach(([nm,col,rgh,met])=>{
+    const b=document.createElement('button'); b.textContent=nm; b.style.cssText='flex:0 0 auto;padding:4px 6px;font-size:10px';
+    const sw=document.createElement('span'); sw.style.cssText=`display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px;vertical-align:middle;background:${col};border:1px solid rgba(255,255,255,.25)`;
+    b.prepend(sw);
+    b.onclick=()=>{ state.matColor=col; state.matRough=rgh; state.matMetal=met;
+      syncLive(); applyMaterial(); refreshJSON(); pushHist(); };
+    row.appendChild(b);
+  });
+  const wrap=document.createElement('div'); wrap.append(lab,row); return wrap;
+}
+function syncLive(){
+  const setSN=(k,v)=>{ if(live[k]){ live[k].r.value=v; live[k].n.value=v; } };
+  setSN('matRough',state.matRough); setSN('matMetal',state.matMetal);
+  setSN('lightAmb',state.lightAmb); setSN('lightAbove',state.lightAbove); setSN('lightBelow',state.lightBelow);
+  if(live.matColor){ live.matColor.c.value=state.matColor; live.matColor.lab.textContent=state.matColor.toUpperCase(); }
+}
 function syncInputs(){
   for(const k in META){ const v=state[k]; inputs[k].r.value=v; inputs[k].n.value=v; }
   inputs.invert.c.checked=state.invert; inputs.blackToFloor.c.checked=state.blackToFloor;
   inputs.wire.c.checked=state.wire; inputs.shade.c.checked=state.shade==='normal';
   if(!state.crop) state.crop={x:0,y:0,w:1,h:1};
+  // backfill look keys for settings saved before material/lighting existed
+  ['matColor','matRough','matMetal','lightAmb','lightAbove','lightBelow']
+    .forEach(k=>{ if(state[k]===undefined) state[k]=DEFAULTS[k]; });
   if(upChk) upChk.checked=state.upscaled;
   if(presChk) presChk.checked=state.present;
   setActive(state.upscaled&&srcUp?srcUp:srcOrig);
-  setPresent(state.present);
+  syncLive(); applyMaterial();
+  setPresent(state.present); // calls applyLights()
   markBoard(); syncBounds(); if(cropCv) drawCrop();
 }
 // carve depth & frame can't exceed the chosen board; propagate bounds + clamp
