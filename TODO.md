@@ -7,9 +7,9 @@ Repo layout:
 ## BAS-TWO-TIAT/ — what it is
 A running-figure depth map (Muybridge athletes overlaid at staggered depths → a marching crowd) extruded into a heightfield relief sized for CNC milling out of nominal XPS foam board.
 
-- `BAS-TWO-TIAT/index.html` — the **lookdev studio** (Three.js, no build). Serve the folder statically and open it. Controls: plaque size, XPS board thickness + backplate (with thin-backplate warnings), frame, depth-map remap (gamma/contrast/floor/blur/invert), crop, 4×-UltraSharp upscaled-source toggle, mesh resolution, X-ray (see backplate), perspective/ortho, Fusion-style ViewCube, presentation render, XPS sheet-layout visualizer, STL export, settings-JSON round-trip.
-- `BAS-TWO-TIAT/depth.png` — source depth map (560×315).
-- `BAS-TWO-TIAT/depth-up.jpg` — 4× UltraSharp upscale (2240×1260).
+- `BAS-TWO-TIAT/extrusion-lookdev/index.html` — the **lookdev studio** (Three.js, no build). Serve the folder statically and open it. Controls: plaque size, XPS board thickness + backplate (with thin-backplate warnings), frame, depth-map remap (gamma/contrast/floor/blur/invert), crop, 4×-UltraSharp upscaled-source toggle, mesh resolution, X-ray (see backplate), perspective/ortho, Fusion-style ViewCube, presentation render, XPS sheet-layout visualizer, STL export, settings-JSON round-trip.
+- `BAS-TWO-TIAT/extrusion-lookdev/depth.png` — source depth map (560×315).
+- `BAS-TWO-TIAT/extrusion-lookdev/depth-up.jpg` — 4× UltraSharp upscale (2240×1260).
 - `BAS-TWO-TIAT/renders/` — gallery/beauty renders (see workflow note below).
 
 ## Done
