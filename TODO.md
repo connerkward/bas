@@ -2,15 +2,15 @@
 
 Repo layout:
 - `BAS-ONE-BYOB/` — the first iteration (the multi-monitor cross / desync running figures, BYOB show). Archived; full git history preserved.
-- `relief/` — current direction: turning the running-figure depth map into a **machinable XPS bas-relief** (CNC-milled foam), plus presentation renders.
+- `BAS-TWO-TIAT/` — current direction: turning the running-figure depth map into a **machinable XPS bas-relief** (CNC-milled foam), plus presentation renders.
 
-## relief/ — what it is
+## BAS-TWO-TIAT/ — what it is
 A running-figure depth map (Muybridge athletes overlaid at staggered depths → a marching crowd) extruded into a heightfield relief sized for CNC milling out of nominal XPS foam board.
 
-- `relief/index.html` — the **lookdev studio** (Three.js, no build). Serve the folder statically and open it. Controls: plaque size, XPS board thickness + backplate (with thin-backplate warnings), frame, depth-map remap (gamma/contrast/floor/blur/invert), crop, 4×-UltraSharp upscaled-source toggle, mesh resolution, X-ray (see backplate), perspective/ortho, Fusion-style ViewCube, presentation render, XPS sheet-layout visualizer, STL export, settings-JSON round-trip.
-- `relief/depth.png` — source depth map (560×315).
-- `relief/depth-up.jpg` — 4× UltraSharp upscale (2240×1260).
-- `relief/renders/` — gallery/beauty renders (see workflow note below).
+- `BAS-TWO-TIAT/index.html` — the **lookdev studio** (Three.js, no build). Serve the folder statically and open it. Controls: plaque size, XPS board thickness + backplate (with thin-backplate warnings), frame, depth-map remap (gamma/contrast/floor/blur/invert), crop, 4×-UltraSharp upscaled-source toggle, mesh resolution, X-ray (see backplate), perspective/ortho, Fusion-style ViewCube, presentation render, XPS sheet-layout visualizer, STL export, settings-JSON round-trip.
+- `BAS-TWO-TIAT/depth.png` — source depth map (560×315).
+- `BAS-TWO-TIAT/depth-up.jpg` — 4× UltraSharp upscale (2240×1260).
+- `BAS-TWO-TIAT/renders/` — gallery/beauty renders (see workflow note below).
 
 ## Done
 - [x] Lookdev studio (all controls above), STL export, sheet-usage visualizer.
