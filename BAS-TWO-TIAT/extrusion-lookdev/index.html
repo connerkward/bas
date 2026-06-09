@@ -68,6 +68,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { STLExporter } from 'three/addons/exporters/STLExporter.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { zipSync, unzipSync, strToU8, strFromU8 } from 'https://cdn.jsdelivr.net/npm/fflate@0.8.2/+esm';
 
 // ---------- defaults ----------
 // nominal US XPS board thicknesses (Foamular / Styrofoam), label + mm
@@ -527,16 +528,20 @@ function buildPanel(){
   const br=document.createElement('div'); br.className='btnrow';
   br.innerHTML=`<button id="undo">↶ Undo</button><button id="redo">↷ Redo</button>
     <button id="reset">Reset</button><button id="copy">Copy JSON</button>
-    <button id="stl" class="pri">Download STL</button>`;
+    <button id="load">Load STL/zip</button>
+    <button id="stl" class="pri">Download STL + JSON (zip)</button>`;
   p.appendChild(br);
+  const fi=document.createElement('input'); fi.type='file'; fi.accept='.stl,.zip,.json'; fi.style.display='none'; p.appendChild(fi);
   const ta=document.createElement('textarea'); ta.id='json'; ta.spellcheck=false; p.appendChild(ta);
   const note=document.createElement('div'); note.className='note';
-  note.textContent='Paste a settings JSON above and press ⏎ to load it. Drag = orbit · scroll = zoom.';
+  note.textContent='Download = zip of STL (with settings baked into its metadata) + settings.json. Drop an STL or zip onto the viewport (or “Load STL/zip”) to restore it. Paste JSON above + ⏎ also works.';
   p.appendChild(note);
 
   br.querySelector('#reset').onclick=()=>{state=structuredClone(DEFAULTS);syncInputs();rebuild();pushHist();};
   br.querySelector('#copy').onclick=()=>{ta.value=JSON.stringify(state,null,2);ta.select();document.execCommand('copy');};
   br.querySelector('#stl').onclick=exportSTL;
+  br.querySelector('#load').onclick=()=>fi.click();
+  fi.addEventListener('change',()=>{ if(fi.files[0]) loadDroppedFile(fi.files[0]); fi.value=''; });
   br.querySelector('#undo').onclick=undo;
   br.querySelector('#redo').onclick=redo;
   ta.addEventListener('keydown',e=>{ if(e.key==='Enter'&&(e.metaKey||e.ctrlKey||!e.shiftKey)){
@@ -758,16 +763,73 @@ addEventListener('keydown',e=>{
 });
 
 // ---------- STL ----------
-function exportSTL(){
-  const geo=window._mergedGeo; if(!geo) return;
-  const m=new THREE.Mesh(geo.clone()); // already in mm, z-up — good for CNC
-  const stl=new STLExporter().parse(m,{binary:true});
-  const blob=new Blob([stl],{type:'model/stl'});
-  const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
-  a.download=`relief_${state.widthMM}x${(state.widthMM*IH/IW).toFixed(0)}mm.stl`; a.click();
+const RLF_MAGIC='RLF1'; // marker for settings embedded after the STL triangle data
+// build a binary STL with the full settings JSON appended after the mesh (CAM ignores trailing bytes)
+function buildStlWithMeta(){
+  const m=new THREE.Mesh(window._mergedGeo.clone()); // mm, z-up — CNC-ready
+  const res=new STLExporter().parse(m,{binary:true}); // r160 returns a DataView
+  const stl=res instanceof ArrayBuffer ? new Uint8Array(res)
+          : new Uint8Array(res.buffer, res.byteOffset||0, res.byteLength);
+  const note=`relief-lookdev v1 - settings embedded (${RLF_MAGIC}); load this STL back to restore`;
+  for(let i=0;i<80;i++) stl[i]= i<note.length?note.charCodeAt(i):0x20; // human note in the 80-byte header
+  const jbytes=strToU8(JSON.stringify(state));
+  const footer=new Uint8Array(8+jbytes.length);
+  footer.set(strToU8(RLF_MAGIC),0);
+  new DataView(footer.buffer).setUint32(4, jbytes.length, true);
+  footer.set(jbytes,8);
+  const out=new Uint8Array(stl.length+footer.length); out.set(stl,0); out.set(footer,stl.length);
+  return {stl:out, json:jbytes};
 }
+function exportSTL(){
+  if(!window._mergedGeo) return;
+  const {stl,json}=buildStlWithMeta();
+  const base=`relief_${state.widthMM}x${(state.widthMM*IH/IW).toFixed(0)}mm`;
+  // zip the metadata-embedded STL together with a standalone settings.json
+  const zip=zipSync({ [`${base}.stl`]: stl, [`${base}.settings.json`]: json }, {level:6});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([zip],{type:'application/zip'}));
+  a.download=`${base}.zip`; a.click();
+}
+// restore full state from a settings object (same path as JSON paste-back)
+function loadStateObj(obj){ if(!obj||typeof obj!=='object') return false;
+  Object.assign(state, obj); syncInputs(); rebuild(); refreshJSON(); pushHist(); return true; }
+// read the settings JSON embedded after an STL's triangle data
+function parseStlMeta(buf){
+  const u=new Uint8Array(buf); if(u.length<84) return null;
+  const dv=new DataView(buf), count=dv.getUint32(80,true), end=84+count*50;
+  if(u.length<end+8) return null;
+  if(strFromU8(u.subarray(end,end+4))!==RLF_MAGIC) return null;
+  const len=dv.getUint32(end+4,true);
+  try{ return JSON.parse(strFromU8(u.subarray(end+8,end+8+len))); }catch(e){ return null; }
+}
+async function loadDroppedFile(f){
+  const buf=await f.arrayBuffer();
+  if(/\.zip$/i.test(f.name)){
+    const z=unzipSync(new Uint8Array(buf));
+    const jf=Object.keys(z).find(k=>/\.json$/i.test(k));
+    const stlf=Object.keys(z).find(k=>/\.stl$/i.test(k));
+    if(jf) return loadStateObj(JSON.parse(strFromU8(z[jf])));
+    if(stlf) return loadStateObj(parseStlMeta(z[stlf].buffer));
+  } else if(/\.stl$/i.test(f.name)){
+    const meta=parseStlMeta(buf);
+    if(meta) return loadStateObj(meta);
+    flash('STL has no embedded relief settings'); return false;
+  } else if(/\.json$/i.test(f.name)){
+    return loadStateObj(JSON.parse(new TextDecoder().decode(buf)));
+  }
+  return false;
+}
+function flash(msg){ const d=document.getElementById('hud'); if(d){ const o=d.innerHTML;
+  d.innerHTML=`<span style="color:#ffcf6a">${msg}</span>`; setTimeout(()=>{},1200); } }
+window.__relief={buildStlWithMeta,parseStlMeta,loadStateObj,loadDroppedFile,getState:()=>state}; // debug/scripting hook
 
 window.addEventListener('resize',resize);
+
+// ---------- drag-drop an STL / zip / json onto the viewport to restore its settings ----------
+const stageEl=document.getElementById('stage');
+stageEl.addEventListener('dragover',e=>{ e.preventDefault(); e.dataTransfer.dropEffect='copy'; stageEl.style.outline='2px dashed #7db4ff'; });
+stageEl.addEventListener('dragleave',()=>{ stageEl.style.outline=''; });
+stageEl.addEventListener('drop',e=>{ e.preventDefault(); stageEl.style.outline='';
+  const f=e.dataTransfer.files && e.dataTransfer.files[0]; if(f) loadDroppedFile(f); });
 </script>
 </body>
 </html>
