@@ -208,6 +208,7 @@ const mats = {
   ghost: new THREE.MeshStandardMaterial({color:0xcdd4dc, roughness:0.5, transparent:true,
     opacity:0.16, depthWrite:false, side:THREE.DoubleSide}),
   back: new THREE.MeshStandardMaterial({color:0x2bb6a0, roughness:0.55, metalness:0.0}),
+  xrayEdge: new THREE.LineBasicMaterial({color:0x6effe0}), // crisp carve-floor edge (cached; rebuild() recreates the mesh each time)
 };
 
 // ---------- depth source ----------
@@ -327,8 +328,7 @@ function rebuild(){
   if(state.xray && base>0){
     const slab=boxAt(W,H,base,0,0,base/2);
     grp.add(new THREE.Mesh(slab, mats.back));
-    grp.add(new THREE.LineSegments(new THREE.EdgesGeometry(slab),
-      new THREE.LineBasicMaterial({color:0x6effe0}))); // crisp carve-floor edge
+    grp.add(new THREE.LineSegments(new THREE.EdgesGeometry(slab), mats.xrayEdge));
   }
   // stand it upright: relief faces world +Z, so the ViewCube's FRONT shows the carved face.
   grp.rotation.set(0,0,0);

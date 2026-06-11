@@ -2,3 +2,4 @@
 .serve-url
 node_modules/
 *.log
+.playwright-mcp/
