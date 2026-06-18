@@ -19,6 +19,7 @@ D = pathlib.Path(__file__).resolve().parent.parent / "depths" / "selfmade"
 def load(name):
     return np.asarray(Image.open(D/name).convert("L"), dtype="float32")/255.0
 DA2 = load("da2.png"); NANO = load("nanobanana.png")
+SRC = np.asarray(Image.open(D/"source.jpg").convert("L"),dtype="float32")/255.0  # real photo shading
 # resize nano to da2 grid
 if NANO.shape != DA2.shape:
     from scipy.ndimage import zoom
@@ -56,6 +57,27 @@ def fuse(alpha=0.6, sigma=1/50, clamp=0.0, dgamma=1.0, bgsupp=0.0, beta=0.0, uns
     if unsharp > 0:
         fused = fused + unsharp*(fused - gaussian_filter(fused, SIG(1/80)))
     return n01(fused)
+
+def guided(I, p, r, eps):
+    """He et al. 2010 guided filter: edge-aware refine p using guide I (radius r px)."""
+    bm=lambda a: gaussian_filter(a, r)
+    mI,mp=bm(I),bm(p); mIp=bm(I*p); cov=mIp-mI*mp; var=bm(I*I)-mI*mI
+    a=cov/(var+eps); b=mp-a*mI
+    return bm(a)*I+bm(b)
+
+def fuse_plus(alpha=0.9, sigma=1/60, clamp=0.1, bgsupp=0.7, mlo=0.45, mhi=0.72,
+              histm=False, imgbump=0.0, guide=0.0):
+    """The tuned DA2⊕Nano fusion + optional improvements: histogram-match, image-bump
+    (real photo carved-shadow detail), guided-filter edge snap to the source image."""
+    f = fuse(alpha=alpha, sigma=sigma, clamp=clamp, bgsupp=bgsupp, mlo=mlo, mhi=mhi, histm=histm)
+    if imgbump > 0:                                   # REAL detail from the photo's own shading
+        sb = SRC - gaussian_filter(SRC, SIG(1/70))
+        mask = n01(gaussian_filter(DA2, SIG(1/40)))
+        f = f + imgbump * sb * mask                    # only on the figure
+    if guide > 0:                                      # snap relief to the photo's edges
+        g = guided(n01(SRC), n01(f), max(2,int(SIG(1/90))), 1e-3)
+        f = (1-guide)*n01(f) + guide*g
+    return n01(f)
 
 def hillshade(h, z=14, light=(-0.5,0.7,0.55)):
     gy,gx = np.gradient(h*z*W/512)

@@ -9,13 +9,20 @@
   *{ box-sizing:border-box; }
   html,body{ margin:0; height:100%; background:var(--paper); color:var(--ink);
     font:13px/1.4 ui-monospace,Menlo,Consolas,monospace; overflow:hidden; }
-  #app{ display:flex; height:100%; flex-wrap:wrap; }
-  #stage{ flex:1 1 420px; position:relative; min-height:240px; }
+  #app{ display:flex; height:100%; }
+  #stage{ flex:1 1 0; position:relative; min-width:0; min-height:240px; }
   #c{ width:100%; height:100%; display:block; }
   #hud{ position:absolute; top:10px; left:12px; pointer-events:none; color:var(--mut);
     font-size:11px; text-shadow:0 1px 2px #000; white-space:pre; }
-  #panel{ width:320px; flex:0 0 320px; border-left:1px solid var(--line); background:#101216;
-    overflow-y:auto; padding:12px 12px 60px; }
+  #panel{ width:320px; flex:0 0 320px; height:100%; border-left:1px solid var(--line);
+    background:#101216; overflow-y:auto; -webkit-overflow-scrolling:touch; padding:12px 12px 60px; }
+  /* narrow screens: stack and let the whole page scroll */
+  @media (max-width:680px){
+    html,body{ overflow:auto; }
+    #app{ flex-direction:column; height:auto; min-height:100%; }
+    #stage{ flex:none; height:58vh; }
+    #panel{ flex:none; width:100%; height:auto; border-left:none; border-top:1px solid var(--line); }
+  }
   h2{ font-size:11px; letter-spacing:.12em; text-transform:uppercase; color:var(--mut);
     margin:16px 0 6px; border-bottom:1px solid var(--line); padding-bottom:4px; }
   h2:first-child{ margin-top:0; }
@@ -70,8 +77,8 @@ const kindStyle=k=>KIND[k]||KIND['depth-net'];
 
 // ---------- state ----------
 const S={ relief:40, base:6, gamma:1, contrast:1, floor:0, smooth:1, invert:false, collapse:true,
-  res:300, hybrid:false, baseEng:'da2', detailEng:'nanobanana', alpha:0.9, sigma:7,
-  clamp:0.1, dgamma:1.0, bgsupp:0.7, mlo:0.45, mhi:0.72 };
+  res:300, hybrid:false, baseEng:'da2', detailEng:'nanobanana', alpha:0.5, sigma:7,
+  clamp:0.12, dgamma:0.85, bgsupp:0.7, mlo:0.45, mhi:0.72, imgbump:0.45, edgesnap:0.3 };
 
 // ---------- three ----------
 const canvas=document.getElementById('c');
@@ -119,6 +126,17 @@ function remap(g){ const out=new Float32Array(g.length);
     v=Math.pow(Math.max(0,Math.min(1,v)),1/S.gamma); v=(v-0.5)*S.contrast+0.5;
     out[i]=Math.max(0,Math.min(1,v)); }
   return out; }
+// He et al. 2010 guided filter (edge-aware) — guide I, input P, radius r cells
+function guided(I,P,nx,ny,r,eps){
+  const N=I.length, IP=new Float32Array(N), II=new Float32Array(N);
+  for(let i=0;i<N;i++){ IP[i]=I[i]*P[i]; II[i]=I[i]*I[i]; }
+  const mI=boxBlur(I,nx,ny,r),mP=boxBlur(P,nx,ny,r),mIP=boxBlur(IP,nx,ny,r),mII=boxBlur(II,nx,ny,r);
+  const a=new Float32Array(N),b=new Float32Array(N);
+  for(let i=0;i<N;i++){ const cov=mIP[i]-mI[i]*mP[i],vr=mII[i]-mI[i]*mI[i]; a[i]=cov/(vr+eps); b[i]=mP[i]-a[i]*mI[i]; }
+  const ma=boxBlur(a,nx,ny,r),mb=boxBlur(b,nx,ny,r),out=new Float32Array(N);
+  for(let i=0;i<N;i++) out[i]=ma[i]*I[i]+mb[i];
+  return out;
+}
 // 0..1 heightfield for an engine (or live hybrid base⊕detail)
 function gridFor(engKey,nx,ny){
   if(engKey==='__hybrid__'){
@@ -130,14 +148,23 @@ function gridFor(engKey,nx,ny){
     let mask=null;
     if(S.bgsupp>0){ const bb=boxBlur(base,nx,ny,Math.max(2,S.sigma*1.5)); mask=new Float32Array(nx*ny);
       for(let i=0;i<mask.length;i++){ let m=(bb[i]-S.mlo)/Math.max(1e-6,S.mhi-S.mlo); m=Math.max(0,Math.min(1,m)); mask[i]=m*m*(3-2*m); } }
+    // image-bump: REAL detail from the source photo's own carved-shadow shading
+    let srcG=null, srcHp=null;
+    if(S.imgbump>0 && srcBuf){ srcG=sampleGrid(srcBuf,nx,ny); const sb=boxBlur(srcG,nx,ny,S.sigma);
+      srcHp=new Float32Array(nx*ny); for(let i=0;i<nx*ny;i++) srcHp[i]=srcG[i]-sb[i]; }
     const fused=new Float32Array(nx*ny);
     for(let i=0;i<nx*ny;i++){
       let hp=det[i]-detBlur[i];                                    // Nano fine detail
       if(S.dgamma!==1) hp=Math.sign(hp)*Math.pow(Math.abs(hp)*2,S.dgamma)/2;  // boost/suppress faint detail
       if(S.clamp>0) hp=Math.tanh(hp/S.clamp)*S.clamp;              // soft-knee: kill spikes
-      if(mask) hp*=(1-S.bgsupp*(1-mask[i]));                       // suppress detail off the figure
-      fused[i]=base[i]+S.alpha*hp;                                 // DA2 global + gated detail
+      let m=mask?(1-S.bgsupp*(1-mask[i])):1;
+      let v=base[i]+S.alpha*hp*m;
+      if(srcHp) v+=S.imgbump*srcHp[i]*m;                           // + real photo detail (figure-gated)
+      fused[i]=v;
     }
+    // edge-snap: guided-filter the relief toward the source photo's edges (He 2010)
+    if(S.edgesnap>0 && srcG){ const g=guided(srcG,fused,nx,ny,Math.max(2,Math.round(S.sigma*1.5)),1e-3);
+      for(let i=0;i<nx*ny;i++) fused[i]=(1-S.edgesnap)*fused[i]+S.edgesnap*g[i]; }
     return fused;
   }
   const e=engByKey[engKey]; if(!e) return new Float32Array(nx*ny);
@@ -205,7 +232,7 @@ let camFramed=false;
 function frameCamera(){
   const box=new THREE.Box3().setFromObject(grp); if(!isFinite(box.min.x))return;
   const s=box.getSize(new THREE.Vector3()),c=box.getCenter(new THREE.Vector3()),r=Math.max(s.x,s.y,s.z);
-  controls.target.copy(c); camera.position.set(c.x+r*0.3,c.y+r*0.35,c.z+r*1.15);
+  controls.target.copy(c); camera.position.set(c.x+r*0.35,c.y+r*0.4,c.z+r*1.7);
   camera.near=Math.max(0.1,r/100); camera.far=r*40; camera.updateProjectionMatrix();
 }
 function loop(){ requestAnimationFrame(loop); controls.update(); resize();
@@ -215,9 +242,11 @@ function resize(){ const w=canvas.clientWidth,h=canvas.clientHeight;
     renderer.setSize(w,h,false); camera.aspect=w/h; camera.updateProjectionMatrix(); } }
 
 // ---------- load ----------
+let srcBuf=null;
 async function loadSource(skey){
   srcKey=skey; const base='depths/'+skey+'/';
-  try{ const s=await loadImg(base+'source.jpg'); img.src=s.src; pieceAspect=s.naturalHeight/s.naturalWidth; }catch(e){}
+  try{ const s=await loadImg(base+'source.jpg'); img.src=s.src; pieceAspect=s.naturalHeight/s.naturalWidth;
+       srcBuf=bufFrom(s); }catch(e){ srcBuf=null; }
   const mani=await fetch(base+'manifest.json').then(r=>r.json()).catch(()=>({engines:{}}));
   const keys=Object.keys(mani.engines||{}).sort((a,b)=>ENG_ORDER.indexOf(a)-ENG_ORDER.indexOf(b));
   ENGINES=[]; engByKey={};
@@ -293,6 +322,8 @@ function buildPanel(){
   hb.appendChild(slider('bgsupp',0,1,0.05,'Background suppression (keep detail on figure only)'));
   hb.appendChild(slider('mlo',0,1,0.01,'Figure-mask low (bg below this)'));
   hb.appendChild(slider('mhi',0,1,0.01,'Figure-mask high (figure above this)'));
+  hb.appendChild(slider('imgbump',0,1.5,0.05,'Photo-detail (real carved-shadow micro-relief)'));
+  hb.appendChild(slider('edgesnap',0,1,0.05,'Edge-snap to photo (guided filter)'));
   const hn=document.createElement('div');hn.className='note';
   hn.textContent='fused = base + α·gate(clamp(γ(highpass(detail,σ)))). Background-suppression masks detail off the flat panel using the base height (mask lo→hi), so the figure gains Nano detail while the background stays clean — the main lever for DA2⊕Nano relief quality.';
   hb.appendChild(hn); p.appendChild(hb);
