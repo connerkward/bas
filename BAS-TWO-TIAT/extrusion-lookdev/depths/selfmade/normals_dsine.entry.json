@@ -1,0 +1,7 @@
+{
+  "engine": "normals_dsine",
+  "file": "normals_dsine.png",
+  "kind": "normals",
+  "model": "DSINE (Bae & Davison 2024, local, MPS, torch.hub)",
+  "elapsed_s": 9.3
+}

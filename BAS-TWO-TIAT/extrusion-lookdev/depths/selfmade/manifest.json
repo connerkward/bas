@@ -43,6 +43,13 @@
       "model": "DA2 + Marigold-Normals detail (local, MPS)",
       "elapsed_s": 12.7
     },
+    "hunyuan3d": {
+      "engine": "hunyuan3d",
+      "file": "hunyuan3d.png",
+      "kind": "image-to-3d",
+      "model": "Hunyuan3D-Pro v3.1 (fal) -> front depth",
+      "elapsed_s": 83
+    },
     "marigold": {
       "engine": "marigold",
       "file": "marigold.png",
@@ -70,6 +77,27 @@
       "kind": "generative",
       "model": "Nano Banana Pro / Gemini-3-Pro-Image (fal)",
       "elapsed_s": 30.8
+    },
+    "normals_dsine": {
+      "engine": "normals_dsine",
+      "file": "normals_dsine.png",
+      "kind": "normals",
+      "model": "DSINE (Bae & Davison 2024, local, MPS, torch.hub)",
+      "elapsed_s": 9.3
+    },
+    "normals_marigold_lcm": {
+      "engine": "normals_marigold_lcm",
+      "file": "normals_marigold_lcm.png",
+      "kind": "normals",
+      "model": "Marigold-Normals-LCM v0-1 (local, MPS, diffusers)",
+      "elapsed_s": 109.9
+    },
+    "tripo": {
+      "engine": "tripo",
+      "file": "tripo.png",
+      "kind": "image-to-3d",
+      "model": "Tripo H3.1 (fal) \u2192 front depth",
+      "elapsed_s": 0
     }
   }
 }

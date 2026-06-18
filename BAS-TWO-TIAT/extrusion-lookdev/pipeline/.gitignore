@@ -3,3 +3,4 @@ da3repo/
 __pycache__/
 *.pyc
 source_orig.jpg
+.venv-normals/

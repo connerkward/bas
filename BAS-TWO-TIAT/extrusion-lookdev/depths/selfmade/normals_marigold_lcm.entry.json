@@ -1,0 +1,7 @@
+{
+  "engine": "normals_marigold_lcm",
+  "file": "normals_marigold_lcm.png",
+  "kind": "normals",
+  "model": "Marigold-Normals-LCM v0-1 (local, MPS, diffusers)",
+  "elapsed_s": 109.9
+}
