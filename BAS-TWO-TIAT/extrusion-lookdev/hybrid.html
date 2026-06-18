@@ -70,7 +70,8 @@ const kindStyle=k=>KIND[k]||KIND['depth-net'];
 
 // ---------- state ----------
 const S={ relief:40, base:6, gamma:1, contrast:1, floor:0, smooth:1, invert:false, collapse:true,
-  res:300, hybrid:false, baseEng:'da2', detailEng:'normals_dsine', alpha:0.6, sigma:8 };
+  res:300, hybrid:false, baseEng:'da2', detailEng:'nanobanana', alpha:0.9, sigma:7,
+  clamp:0.1, dgamma:1.0, bgsupp:0.7, mlo:0.45, mhi:0.72 };
 
 // ---------- three ----------
 const canvas=document.getElementById('c');
@@ -124,10 +125,19 @@ function gridFor(engKey,nx,ny){
     const b=engByKey[S.baseEng], d=engByKey[S.detailEng];
     if(!b||!d) return new Float32Array(nx*ny);
     const base=sampleGrid(b.buf,nx,ny), det=sampleGrid(d.buf,nx,ny);
-    const detHp=det.map((v,i)=>v); // placeholder filled below
     const detBlur=boxBlur(det,nx,ny,S.sigma);
+    // figure mask from the base height (sharp smoothstep): ~1 on raised figure, ~0 on flat bg
+    let mask=null;
+    if(S.bgsupp>0){ const bb=boxBlur(base,nx,ny,Math.max(2,S.sigma*1.5)); mask=new Float32Array(nx*ny);
+      for(let i=0;i<mask.length;i++){ let m=(bb[i]-S.mlo)/Math.max(1e-6,S.mhi-S.mlo); m=Math.max(0,Math.min(1,m)); mask[i]=m*m*(3-2*m); } }
     const fused=new Float32Array(nx*ny);
-    for(let i=0;i<nx*ny;i++) fused[i]=base[i]+S.alpha*(det[i]-detBlur[i]);
+    for(let i=0;i<nx*ny;i++){
+      let hp=det[i]-detBlur[i];                                    // Nano fine detail
+      if(S.dgamma!==1) hp=Math.sign(hp)*Math.pow(Math.abs(hp)*2,S.dgamma)/2;  // boost/suppress faint detail
+      if(S.clamp>0) hp=Math.tanh(hp/S.clamp)*S.clamp;              // soft-knee: kill spikes
+      if(mask) hp*=(1-S.bgsupp*(1-mask[i]));                       // suppress detail off the figure
+      fused[i]=base[i]+S.alpha*hp;                                 // DA2 global + gated detail
+    }
     return fused;
   }
   const e=engByKey[engKey]; if(!e) return new Float32Array(nx*ny);
@@ -275,11 +285,16 @@ function buildPanel(){
     ENGINES.forEach(e=>{const o=document.createElement('option');o.value=e.key;o.textContent=e.name;if(S[keyOf]===e.key)o.selected=true;s.appendChild(o);});
     s.addEventListener('change',()=>{S[keyOf]=s.value;rebuild();}); w.append(l,s);return w; };
   hb.appendChild(mkSel('baseEng','Base (global shape — use a depth net)'));
-  hb.appendChild(mkSel('detailEng','Detail (high-freq — normals / nano / image)'));
+  hb.appendChild(mkSel('detailEng','Detail (high-freq — nano / normals / image)'));
   hb.appendChild(slider('alpha',0,2,0.05,'Detail strength α'));
-  hb.appendChild(slider('sigma',1,40,1,'Detail cutoff σ (cells)'));
+  hb.appendChild(slider('sigma',1,40,1,'Detail cutoff σ (cells) — smaller = finer only'));
+  hb.appendChild(slider('clamp',0,0.4,0.01,'Spike clamp (0 = off) — tames Nano hard edges'));
+  hb.appendChild(slider('dgamma',0.5,1.6,0.05,'Detail γ (<1 boosts faint skin/muscle)'));
+  hb.appendChild(slider('bgsupp',0,1,0.05,'Background suppression (keep detail on figure only)'));
+  hb.appendChild(slider('mlo',0,1,0.01,'Figure-mask low (bg below this)'));
+  hb.appendChild(slider('mhi',0,1,0.01,'Figure-mask high (figure above this)'));
   const hn=document.createElement('div');hn.className='note';
-  hn.textContent='fused = base + α·highpass(detail, σ). Keeps the depth net’s reliable global shape, injects the detail source’s fine relief.';
+  hn.textContent='fused = base + α·gate(clamp(γ(highpass(detail,σ)))). Background-suppression masks detail off the flat panel using the base height (mask lo→hi), so the figure gains Nano detail while the background stays clean — the main lever for DA2⊕Nano relief quality.';
   hb.appendChild(hn); p.appendChild(hb);
 
   sec('Extrusion');
