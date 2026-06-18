@@ -1,0 +1,47 @@
+{
+  "source": "/Users/conner/dev/bas/BAS-TWO-TIAT/extrusion-lookdev/depths/modernist/source.jpg",
+  "engines": {
+    "chatgpt": {
+      "engine": "chatgpt",
+      "file": "chatgpt.png",
+      "kind": "generative",
+      "model": "ChatGPT Image / gpt-image-1 (hosted)",
+      "elapsed_s": 22.8
+    },
+    "da2": {
+      "engine": "da2",
+      "file": "da2.png",
+      "kind": "depth-net",
+      "model": "Depth-Anything-V2-Large (local, MPS)",
+      "elapsed_s": 5.2
+    },
+    "da3giant": {
+      "engine": "da3giant",
+      "file": "da3giant.png",
+      "kind": "depth-net",
+      "model": "Depth-Anything-3 GIANT-1.1 1B (local, MPS)",
+      "elapsed_s": 8.5
+    },
+    "marigold": {
+      "engine": "marigold",
+      "file": "marigold.png",
+      "kind": "depth-net",
+      "model": "Marigold LCM (local, MPS, diffusers)",
+      "elapsed_s": 12.6
+    },
+    "midas": {
+      "engine": "midas",
+      "file": "midas.png",
+      "kind": "depth-net",
+      "model": "MiDaS / DPT-Hybrid (local, MPS)",
+      "elapsed_s": 5.0
+    },
+    "nanobanana": {
+      "engine": "nanobanana",
+      "file": "nanobanana.png",
+      "kind": "generative",
+      "model": "Nano Banana Pro / Gemini-3-Pro-Image (fal)",
+      "elapsed_s": 24.0
+    }
+  }
+}

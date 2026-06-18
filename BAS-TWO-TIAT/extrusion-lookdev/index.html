@@ -221,24 +221,34 @@ function bufFrom(im){ const c=document.createElement('canvas'); c.width=im.natur
   const x=c.getContext('2d'); x.drawImage(im,0,0);
   return {data:x.getImageData(0,0,im.naturalWidth,im.naturalHeight).data, W:im.naturalWidth, H:im.naturalHeight}; }
 function setActive(s){ if(!s) return; imgData=s.data; IW=s.W; IH=s.H; }
-const ENG_LABELS={da2:'Depth-Anything-V2',da3:'Depth-Anything-3',marigold:'Marigold',
-  midas:'MiDaS',nanobanana:'Nano Banana Pro',chatgpt:'ChatGPT Image'};
+const ENG_LABELS={da2:'Depth-Anything-V2',da3:'Depth-Anything-3 (mono)',da3giant:'Depth-Anything-3 Giant',
+  marigold:'Marigold',midas:'MiDaS',nanobanana:'Nano Banana Pro',chatgpt:'ChatGPT Image'};
+const ENG_ORDER=['da2','da3','da3giant','marigold','midas','nanobanana','chatgpt'];
 function loadImg(src){ return new Promise((res,rej)=>{ const im=new Image();
   im.onload=()=>res(im); im.onerror=rej; im.src=src; }); }
+let SOURCES=[], srcKey=null, started=false;
 async function init(){
-  try{ const s=await loadImg('pipeline/source.jpg'); img.src=s.src;
+  const idx=await fetch('depths/index.json').then(r=>r.json()).catch(()=>({sources:[]}));
+  SOURCES=idx.sources||[];
+  if(!SOURCES.length){ document.getElementById('hud').textContent=
+    'No sources — run  pipeline/gen_depth.py --key <name> --src <relief image>'; return; }
+  await loadSource(SOURCES[0].key);
+  if(!started){ started=true; loop(); }
+}
+// load one source's depth maps (per-engine) + its source-photo thumbnail, then rebuild
+async function loadSource(key){
+  srcKey=key; const base='depths/'+key+'/';
+  try{ const s=await loadImg(base+'source.jpg'); img.src=s.src;
        pieceAspect=s.naturalHeight/s.naturalWidth; }catch(e){}
-  const mani=await fetch('depths/manifest.json').then(r=>r.json()).catch(()=>({engines:{}}));
-  const order=['da2','da3','marigold','midas','nanobanana','chatgpt'];
-  const keys=Object.keys(mani.engines||{}).sort((a,b)=>order.indexOf(a)-order.indexOf(b));
+  const mani=await fetch(base+'manifest.json').then(r=>r.json()).catch(()=>({engines:{}}));
+  const keys=Object.keys(mani.engines||{}).sort((a,b)=>ENG_ORDER.indexOf(a)-ENG_ORDER.indexOf(b));
+  ENGINES=[];
   for(const k of keys){ const e=mani.engines[k];
-    try{ const im=await loadImg('depths/'+e.file);
+    try{ const im=await loadImg(base+e.file);
       ENGINES.push({key:k,name:ENG_LABELS[k]||k,kind:e.kind,model:e.model,buf:bufFrom(im)}); }catch(err){}
   }
-  if(!ENGINES.length){ document.getElementById('hud').textContent=
-    'No depth maps found — run  pipeline/gen_depth.py  to populate depths/'; return; }
-  activeIdx=0; setActive(ENGINES[0].buf);
-  buildPanel(); rebuild(); frameCamera(); pushHist(); loop();
+  activeIdx=0; setActive(ENGINES[0]?.buf);
+  buildPanel(); rebuild(); frameCamera(); pushHist();
 }
 init();
 
@@ -565,6 +575,7 @@ function buildPanel(){
   const p=document.getElementById('panel'); p.innerHTML='';
   const sec=(t)=>{const h=document.createElement('h2');h.textContent=t;p.appendChild(h);};
 
+  if(SOURCES.length>1){ sec('Relief source'); p.appendChild(sourceSelector()); }
   sec('Form & size');
   p.appendChild(slider('widthMM'));
   p.appendChild(boardSelect());
@@ -771,6 +782,23 @@ function check(k,label){
   const c=document.createElement('input'); c.type='checkbox'; inputs[k]={c};
   c.addEventListener('change',()=>{state[k]=c.checked;rebuild();refreshJSON();pushHist();});
   l.append(c,document.createTextNode(label)); return l;
+}
+// ---- relief-source selector (cycle through the head-on reliefs) ----
+function sourceSelector(){
+  const wrap=document.createElement('div');
+  const row=document.createElement('div'); row.className='btnrow';
+  SOURCES.forEach(s=>{
+    const b=document.createElement('button'); b.textContent=s.title||s.key;
+    b.style.cssText='flex:1 1 100%;padding:5px 7px;font-size:10px;text-align:left';
+    const on=s.key===srcKey;
+    b.style.background=on?'var(--accent)':'#1b1f27'; b.style.color=on?'#06101f':'var(--ink)';
+    b.style.borderColor=on?'var(--accent)':'var(--line)'; b.style.fontWeight=on?'700':'400';
+    b.onclick=()=>{ if(s.key!==srcKey) loadSource(s.key); };
+    row.appendChild(b);
+  });
+  const note=document.createElement('div'); note.className='note';
+  note.textContent=`${SOURCES.length} head-on reliefs · switching reloads that source's depth maps.`;
+  wrap.append(row,note); return wrap;
 }
 // ---- depth-engine selector + side-by-side compare ----
 let engBtns=[];

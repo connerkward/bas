@@ -19,8 +19,9 @@ Usage:
 import sys, os, json, time, base64, io, argparse, pathlib, urllib.request
 
 HERE = pathlib.Path(__file__).resolve().parent
-OUT  = HERE.parent / "depths"
-OUT.mkdir(exist_ok=True)
+DEPTHS = HERE.parent / "depths"        # root; one subdir per source
+DEPTHS.mkdir(exist_ok=True)
+OUT = DEPTHS                           # current source's output dir (set per --key in main)
 MANIFEST = OUT / "manifest.json"
 
 # ---- keys from the gitignored central/.env (never hardcode, never log values) ----
@@ -57,13 +58,30 @@ def rebuild_manifest():
         except Exception: pass
     MANIFEST.write_text(json.dumps({"source": src, "engines": engines}, indent=2))
 
-def set_source(path):
+def set_source(path, title=None):
     j = {}
     if (OUT / "source.json").exists():
         try: j = json.loads((OUT / "source.json").read_text())
         except Exception: pass
-    j["source"] = str(path); (OUT / "source.json").write_text(json.dumps(j, indent=2))
+    j["source"] = str(path)
+    if title: j["title"] = title
+    (OUT / "source.json").write_text(json.dumps(j, indent=2))
     rebuild_manifest()
+
+def build_index():
+    """Scan depths/<key>/manifest.json -> depths/index.json (the source list for the studio)."""
+    srcs = []
+    for d in sorted(DEPTHS.iterdir()):
+        if not d.is_dir(): continue
+        sj = d / "source.json"
+        if not (d / "manifest.json").exists(): continue
+        title = d.name
+        if sj.exists():
+            try: title = json.loads(sj.read_text()).get("title", d.name)
+            except Exception: pass
+        srcs.append({"key": d.name, "title": title,
+                     "thumb": f"{d.name}/source.jpg" if (d / "source.jpg").exists() else None})
+    (DEPTHS / "index.json").write_text(json.dumps({"sources": srcs}, indent=2))
 
 # ---- normalization: array -> grayscale PNG with white=near ----
 def save_depth(arr, engine, invert=False):
@@ -108,30 +126,37 @@ def run_da2(src):
     f = save_depth(d, "da2", invert=False)                      # large->white = near->white
     save_entry("da2", f, "depth-net", "Depth-Anything-V2-Large (local, MPS)", time.time()-t0)
 
-def run_da3(src):
-    """Depth-Anything-3 monocular Large (local). prediction.depth is metric-ish depth: near=small,
-    so invert to make near=white."""
-    import torch, numpy as np, types
-    t0 = time.time()
-    dev = "mps" if torch.backends.mps.is_available() else "cpu"
+def _da3_stubs():
     # DA3's api.py eagerly imports gaussian-splat export (moviepy/gsplat) and xformers,
     # none of which are needed for — or buildable on — Apple Silicon monocular depth.
     # xformers has a pure-torch fallback in the model; stub the export-only CUDA deps.
+    import types
     for m in ("moviepy", "moviepy.editor", "gsplat", "xformers", "xformers.ops", "plyfile"):
         sys.modules.setdefault(m, types.ModuleType(m))
-    # short-circuit the 3D-export module (glb/3DGS/video) — unused for a 2D depth map,
-    # and its transitive deps don't build on Apple Silicon.
     exp = types.ModuleType("depth_anything_3.utils.export")
     exp.export = lambda *a, **k: None
     sys.modules.setdefault("depth_anything_3.utils.export", exp)
+
+def _run_da3(src, repo, key, label):
+    """Depth-Anything-3 (local). prediction.depth is metric-ish depth (near=small),
+    so invert to make near=white for the studio."""
+    import torch, numpy as np
+    t0 = time.time()
+    dev = "mps" if torch.backends.mps.is_available() else "cpu"
+    _da3_stubs()
     from depth_anything_3.api import DepthAnything3
-    log(f"[da3] loading DA3MONO-LARGE on {dev} ...")
-    model = DepthAnything3.from_pretrained("depth-anything/DA3MONO-LARGE").to(device=dev)
+    log(f"[{key}] loading {repo} on {dev} ...")
+    model = DepthAnything3.from_pretrained(repo).to(device=dev)
     pred = model.inference([str(src)])
     d = np.asarray(pred.depth).squeeze().astype("float32")
-    # DA3 mono returns depth (near=small). invert so near=white to match the studio.
-    f = save_depth(d, "da3", invert=True)
-    save_entry("da3", f, "depth-net", "Depth-Anything-3 MONO-Large (local, MPS)", time.time()-t0)
+    f = save_depth(d, key, invert=True)
+    save_entry(key, f, "depth-net", label, time.time()-t0)
+
+def run_da3(src):       # purpose-built monocular model
+    _run_da3(src, "depth-anything/DA3MONO-LARGE", "da3", "Depth-Anything-3 MONO-Large (local, MPS)")
+
+def run_da3giant(src):  # SOTA-capacity any-view model (1B), also does single-image depth
+    _run_da3(src, "depth-anything/DA3-GIANT-1.1", "da3giant", "Depth-Anything-3 GIANT-1.1 1B (local, MPS)")
 
 # ============================ FAL ENGINES ============================
 def _fal_run(endpoint, payload):
@@ -164,6 +189,11 @@ def run_marigold(src):
     prediction is affine-invariant depth in [0,1] with 0=near; invert for white=near."""
     import torch, numpy as np
     from PIL import Image
+    # DA3 (if it ran earlier in this process) stubs a fake xformers in sys.modules whose
+    # __spec__ is None; diffusers' xformers probe crashes on that. xformers isn't actually
+    # installed, so drop the stubs and let diffusers correctly see it as absent.
+    for m in [k for k in list(sys.modules) if k == "xformers" or k.startswith("xformers.")]:
+        del sys.modules[m]
     import diffusers
     t0 = time.time()
     dev = "mps" if torch.backends.mps.is_available() else "cpu"
@@ -246,24 +276,42 @@ def run_chatgpt(src):
     f = rgb_to_depth_png(raw, "chatgpt", invert=False)
     save_entry("chatgpt", f, "generative", "ChatGPT Image / gpt-image-1 (hosted)", time.time()-t0)
 
-ENGINES = {"da2": run_da2, "da3": run_da3, "marigold": run_marigold,
-           "midas": run_midas, "nanobanana": run_nanobanana, "chatgpt": run_chatgpt}
+ENGINES = {"da2": run_da2, "da3": run_da3, "da3giant": run_da3giant, "marigold": run_marigold,
+           "midas": run_midas, "midas_fal": run_midas_fal, "marigold_fal": run_marigold_fal,
+           "nanobanana": run_nanobanana, "chatgpt": run_chatgpt}
+
+DEFAULT_SET = ["da2", "da3giant", "marigold", "midas", "nanobanana", "chatgpt"]
 
 def main():
+    global OUT, MANIFEST
     ap = argparse.ArgumentParser()
     ap.add_argument("--src", default=str(HERE / "source.jpg"))
-    ap.add_argument("engines", nargs="+")
+    ap.add_argument("--key", default="default", help="source key -> depths/<key>/")
+    ap.add_argument("--title", default=None, help="human label for the source")
+    ap.add_argument("engines", nargs="*", default=["set"],
+                    help="engine names, or 'all' / 'set' (the default comparison set)")
     a = ap.parse_args()
     src = pathlib.Path(a.src).resolve()
-    set_source(src)
-    todo = list(ENGINES) if a.engines == ["all"] else a.engines
-    log(f"source: {src}\nengines: {todo}\n")
+    OUT = DEPTHS / a.key; OUT.mkdir(parents=True, exist_ok=True)
+    MANIFEST = OUT / "manifest.json"
+    # stash a downscaled copy of the source for the studio's thumbnail + plaque aspect
+    try:
+        from PIL import Image
+        im = Image.open(src).convert("RGB"); im.thumbnail((1400, 1400))
+        im.save(OUT / "source.jpg", quality=92)
+    except Exception as ex:
+        log(f"!! could not stage source thumb: {ex}")
+    set_source(src, a.title or a.key)
+    engs = a.engines or ["set"]
+    todo = DEFAULT_SET if engs == ["set"] else (list(ENGINES) if engs == ["all"] else engs)
+    log(f"key: {a.key}\nsource: {src}\nengines: {todo}\n")
     for e in todo:
         if e not in ENGINES: log(f"!! unknown engine {e}"); continue
         try:
             ENGINES[e](src)
         except Exception as ex:
             log(f"!! {e} FAILED: {type(ex).__name__}: {ex}")
+    build_index()
     log("\ndone.")
 
 if __name__ == "__main__":

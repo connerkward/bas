@@ -1,0 +1,24 @@
+{
+  "sources": [
+    {
+      "key": "modernist",
+      "title": "Modernist concrete cast relief",
+      "thumb": "modernist/source.jpg"
+    },
+    {
+      "key": "selfmade",
+      "title": "Self-Made Man \u2014 high relief figure",
+      "thumb": "selfmade/source.jpg"
+    },
+    {
+      "key": "tondo",
+      "title": "Tondo \u2014 two figures in a roundel",
+      "thumb": "tondo/source.jpg"
+    },
+    {
+      "key": "woodpanel",
+      "title": "Carved wood narrative panel",
+      "thumb": "woodpanel/source.jpg"
+    }
+  ]
+}

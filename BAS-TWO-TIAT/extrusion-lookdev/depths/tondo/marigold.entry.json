@@ -1,0 +1,7 @@
+{
+  "engine": "marigold",
+  "file": "marigold.png",
+  "kind": "depth-net",
+  "model": "Marigold LCM (local, MPS, diffusers)",
+  "elapsed_s": 13.3
+}

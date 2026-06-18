@@ -22,6 +22,13 @@
       "model": "Depth-Anything-3 MONO-Large (local, MPS)",
       "elapsed_s": 41.5
     },
+    "da3giant": {
+      "engine": "da3giant",
+      "file": "da3giant.png",
+      "kind": "depth-net",
+      "model": "Depth-Anything-3 GIANT-1.1 1B (local, MPS)",
+      "elapsed_s": 118.4
+    },
     "marigold": {
       "engine": "marigold",
       "file": "marigold.png",

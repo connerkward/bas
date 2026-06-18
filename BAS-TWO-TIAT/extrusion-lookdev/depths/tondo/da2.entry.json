@@ -1,0 +1,7 @@
+{
+  "engine": "da2",
+  "file": "da2.png",
+  "kind": "depth-net",
+  "model": "Depth-Anything-V2-Large (local, MPS)",
+  "elapsed_s": 2.9
+}

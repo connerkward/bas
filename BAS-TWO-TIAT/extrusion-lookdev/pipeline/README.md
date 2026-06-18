@@ -27,7 +27,16 @@ return a near-flat emboss). Kept as a comparison axis, labelled as such in the s
 
 ## Run
 
+Each source lives in its own `../depths/<key>/` (depth maps + `manifest.json` + a
+`source.jpg` thumbnail); `../depths/index.json` lists all sources and the studio cycles
+them. `da3giant` (DA3-GIANT-1.1, 1B) is the default DA3 — higher-capacity than the
+purpose-built `da3` (DA3MONO-LARGE); both run locally at ~the same speed.
+
 ```bash
+# generate a new source (default 6-engine comparison set)
+PYTHONPATH=da3repo/src .venv/bin/python gen_depth.py \
+  --key woodpanel --title "Carved wood narrative panel" --src /path/to/relief.jpg set
+
 uv venv --python 3.12 .venv && source .venv/bin/activate
 uv pip install torch torchvision transformers diffusers accelerate pillow numpy requests \
   safetensors huggingface_hub einops

@@ -1,0 +1,7 @@
+{
+  "engine": "da3giant",
+  "file": "da3giant.png",
+  "kind": "depth-net",
+  "model": "Depth-Anything-3 GIANT-1.1 1B (local, MPS)",
+  "elapsed_s": 8.5
+}
