@@ -222,8 +222,12 @@ function bufFrom(im){ const c=document.createElement('canvas'); c.width=im.natur
   return {data:x.getImageData(0,0,im.naturalWidth,im.naturalHeight).data, W:im.naturalWidth, H:im.naturalHeight}; }
 function setActive(s){ if(!s) return; imgData=s.data; IW=s.W; IH=s.H; }
 const ENG_LABELS={da2:'Depth-Anything-V2',da3:'Depth-Anything-3 (mono)',da3giant:'Depth-Anything-3 Giant',
-  marigold:'Marigold',midas:'MiDaS',nanobanana:'Nano Banana Pro',chatgpt:'ChatGPT Image'};
-const ENG_ORDER=['da2','da3','da3giant','marigold','midas','nanobanana','chatgpt'];
+  marigold:'Marigold',midas:'MiDaS',nanobanana:'Nano Banana Pro',chatgpt:'ChatGPT Image',
+  fuse_normal:'DA2 ⊕ Normals (fused)',fuse_nano:'DA2 ⊕ Nano (fused)',meshy:'Meshy 6 (image→3D)'};
+const ENG_ORDER=['da2','da3','da3giant','marigold','midas','fuse_normal','fuse_nano','nanobanana','chatgpt','meshy'];
+const KIND={'depth-net':{c:'#7db4ff',b:'● depth net'},'generative':{c:'#e0a35a',b:'◇ generative guess'},
+  'fusion':{c:'#74e0a3',b:'⊕ fused'},'image-to-3d':{c:'#c79cff',b:'◈ image→3D'}};
+const kindStyle=k=>KIND[k]||KIND['depth-net'];
 function loadImg(src){ return new Promise((res,rej)=>{ const im=new Image();
   im.onload=()=>res(im); im.onerror=rej; im.src=src; }); }
 let SOURCES=[], srcKey=null, started=false;
@@ -361,10 +365,10 @@ function makeLabel(eng, active){
   x.beginPath(); x.roundRect(4,4,504,132,16); x.fill();
   x.strokeStyle=active?'#dbe9ff':'#3a4150'; x.lineWidth=3; x.stroke();
   x.textAlign='center'; x.textBaseline='middle';
-  x.fillStyle=active?'#06101f':'#e8e6e1'; x.font='bold 44px ui-monospace,monospace';
+  x.fillStyle=active?'#06101f':'#e8e6e1'; x.font='bold 40px ui-monospace,monospace';
   x.fillText(eng.name, 256, 54);
-  x.font='24px ui-monospace,monospace'; x.fillStyle=active?'#143a6e':(eng.kind==='generative'?'#e0a35a':'#7db4ff');
-  x.fillText(eng.kind==='generative'?'◇ generative guess':'● depth net', 256, 100);
+  x.font='24px ui-monospace,monospace'; x.fillStyle=active?'#143a6e':kindStyle(eng.kind).c;
+  x.fillText(kindStyle(eng.kind).b, 256, 100);
   const tex=new THREE.CanvasTexture(c); tex.anisotropy=4;
   const sp=new THREE.Sprite(new THREE.SpriteMaterial({map:tex, transparent:true, depthTest:false}));
   sp.renderOrder=10; return sp;
@@ -460,8 +464,8 @@ function updateHUD(){
   const sheets=sheetCount(+s.W,+s.H);
   const sheetTxt = sheets<=1 ? `· fits 1 XPS sheet (${SHEET.label})` : `· ${sheets} XPS sheets (${SHEET.label}, glued)`;
   const e=ENGINES[activeIdx];
-  const eCol=e&&e.kind==='generative'?'#e0a35a':'#7db4ff';
-  const eLine=e?`<span style="color:${eCol}">${compareMode?'compare · ':''}${e.name} — ${e.kind==='generative'?'generative guess':'depth net'}</span>\n`:'';
+  const ks=e?kindStyle(e.kind):{c:'#7db4ff',b:''};
+  const eLine=e?`<span style="color:${ks.c}">${compareMode?'compare · ':''}${e.name} — ${ks.b.replace(/^[^ ]+ /,'')}</span>\n`:'';
   document.getElementById('hud').innerHTML = eLine +
     `plaque  ${s.W} × ${s.H} mm  (${(s.W/25.4).toFixed(1)}" × ${(s.H/25.4).toFixed(1)}")  ${sheetTxt}\n`+
     `XPS board  ${lbl} (${s.board} mm)   carve depth ${s.relief} mm\n`+
@@ -811,13 +815,13 @@ function engineSelector(){
     b.textContent=e.name; b.title=e.model||'';
     b.style.cssText='flex:1 1 46%;padding:5px 6px;font-size:10px;text-align:left';
     const dot=document.createElement('span');
-    dot.style.cssText=`display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:5px;vertical-align:middle;background:${e.kind==='generative'?'#e0a35a':'#7db4ff'}`;
+    dot.style.cssText=`display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:5px;vertical-align:middle;background:${kindStyle(e.kind).c}`;
     b.prepend(dot);
     b.onclick=()=>selectEngine(k);
     engBtns.push(b); row.appendChild(b);
   });
   const note=document.createElement('div'); note.className='note';
-  note.innerHTML='<span style="color:#7db4ff">●</span> depth net (true monocular depth) &nbsp; <span style="color:#e0a35a">◇</span> generative guess (image model — looks plausible, not metric)';
+  note.innerHTML='<span style="color:#7db4ff">●</span> depth net &nbsp; <span style="color:#e0a35a">◇</span> generative guess &nbsp; <span style="color:#74e0a3">⊕</span> fused (DA2+detail) &nbsp; <span style="color:#c79cff">◈</span> image→3D mesh';
   wrap.append(row,note); markEngine(); return wrap;
 }
 function selectEngine(k){ activeIdx=k; setActive(ENGINES[k].buf); markEngine(); rebuild(); refreshJSON(); }

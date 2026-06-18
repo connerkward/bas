@@ -158,6 +158,79 @@ def run_da3(src):       # purpose-built monocular model
 def run_da3giant(src):  # SOTA-capacity any-view model (1B), also does single-image depth
     _run_da3(src, "depth-anything/DA3-GIANT-1.1", "da3giant", "Depth-Anything-3 GIANT-1.1 1B (local, MPS)")
 
+# ============================ FUSION ============================
+# A depth net gets the GLOBAL shape right but smooths fine relief; a normal map (or a
+# generative depth) carries the HIGH-frequency detail. Fuse: low-pass(reliable base) +
+# high-pass(detail). Base = DA2 (must be generated first).
+def _load_gray(name):
+    import numpy as np
+    from PIL import Image
+    p = OUT / name
+    if not p.exists(): raise RuntimeError(f"fusion needs {name} first (run da2 / its detail engine before fusion)")
+    return np.asarray(Image.open(p).convert("L"), dtype="float32") / 255.0
+
+def _norm01(a):
+    import numpy as np
+    lo, hi = np.percentile(a, 1), np.percentile(a, 99)
+    return np.clip((a - lo) / max(hi - lo, 1e-6), 0, 1)
+
+def integrate_normals(nx, ny, nz):
+    """Frankot-Chellappa: least-squares integrate a normal field to a height map (FFT)."""
+    import numpy as np
+    nz = np.where(np.abs(nz) < 0.05, 0.05 * np.sign(nz + 1e-9), nz)
+    p, q = -nx / nz, -ny / nz                     # dz/dx, dz/dy
+    H, W = p.shape
+    wx = np.fft.fftfreq(W).reshape(1, W) * 2 * np.pi
+    wy = np.fft.fftfreq(H).reshape(H, 1) * 2 * np.pi
+    denom = wx**2 + wy**2; denom[0, 0] = 1.0
+    Z = (-1j * wx * np.fft.fft2(p) - 1j * wy * np.fft.fft2(q)) / denom
+    Z[0, 0] = 0
+    return np.real(np.fft.ifft2(Z))
+
+def _fuse(base, detail, key, alpha=0.6, sigma_frac=1/50.0, invert_detail=False):
+    # Keep the FULL reliable base (DA2 is already crisp) and ADD the detail source's high
+    # frequencies on top — augment, don't replace. (lowpass+highpass-swap muddied DA2.)
+    import numpy as np
+    from scipy.ndimage import gaussian_filter, zoom
+    if detail.shape != base.shape:
+        detail = zoom(detail, (base.shape[0]/detail.shape[0], base.shape[1]/detail.shape[1]), order=1)
+    detail = _norm01(detail)
+    if invert_detail: detail = 1 - detail
+    sig = max(2.0, base.shape[1] * sigma_frac)
+    det_hp = detail - gaussian_filter(detail, sig)   # detail's fine frequencies only
+    return base + alpha * det_hp                     # full DA2 structure + injected detail
+
+def run_fuse_normal(src):
+    """DA2 global shape + fine relief recovered from Marigold surface normals (local)."""
+    import torch, numpy as np
+    from PIL import Image
+    for m in [k for k in list(sys.modules) if k == "xformers" or k.startswith("xformers.")]:
+        del sys.modules[m]
+    import diffusers
+    t0 = time.time()
+    dev = "mps" if torch.backends.mps.is_available() else "cpu"
+    log(f"[fuse_normal] Marigold-Normals (local, {dev}) + DA2 base ...")
+    pipe = diffusers.MarigoldNormalsPipeline.from_pretrained(
+        "prs-eth/marigold-normals-v1-1", torch_dtype=torch.float32).to(dev)
+    out = pipe(Image.open(src).convert("RGB"), num_inference_steps=10)
+    N = np.asarray(out.prediction).squeeze().astype("float32")   # (H,W,3) in [-1,1]
+    z = integrate_normals(N[..., 0], N[..., 1], N[..., 2])
+    base = _load_gray("da2.png")
+    # normal-integrated detail sign can flip; pick the orientation that correlates with DA2
+    from scipy.ndimage import zoom
+    zr = zoom(_norm01(z), (base.shape[0]/z.shape[0], base.shape[1]/z.shape[1]), order=1)
+    flip = np.corrcoef(zr.ravel(), base.ravel())[0,1] < 0
+    f = save_depth(_fuse(base, z, "fuse_normal", invert_detail=flip), "fuse_normal")
+    save_entry("fuse_normal", f, "fusion", "DA2 + Marigold-Normals detail (local, MPS)", time.time()-t0)
+
+def run_fuse_nano(src):
+    """DA2 global shape + Nano Banana's high-frequency detail (DA2 local + nano hosted)."""
+    t0 = time.time()
+    log("[fuse_nano] DA2 base + Nano Banana detail ...")
+    base = _load_gray("da2.png"); detail = _load_gray("nanobanana.png")
+    f = save_depth(_fuse(base, detail, "fuse_nano"), "fuse_nano")
+    save_entry("fuse_nano", f, "fusion", "DA2 + Nano Banana Pro detail (hybrid)", time.time()-t0)
+
 # ============================ FAL ENGINES ============================
 def _fal_run(endpoint, payload):
     key = ENV.get("FAL_KEY")
@@ -278,7 +351,8 @@ def run_chatgpt(src):
 
 ENGINES = {"da2": run_da2, "da3": run_da3, "da3giant": run_da3giant, "marigold": run_marigold,
            "midas": run_midas, "midas_fal": run_midas_fal, "marigold_fal": run_marigold_fal,
-           "nanobanana": run_nanobanana, "chatgpt": run_chatgpt}
+           "nanobanana": run_nanobanana, "chatgpt": run_chatgpt,
+           "fuse_normal": run_fuse_normal, "fuse_nano": run_fuse_nano}
 
 DEFAULT_SET = ["da2", "da3giant", "marigold", "midas", "nanobanana", "chatgpt"]
 

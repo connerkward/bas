@@ -1,5 +1,5 @@
 {
-  "source": "/Users/conner/dev/bas/BAS-TWO-TIAT/extrusion-lookdev/pipeline/source.jpg",
+  "source": "/Users/conner/dev/bas/BAS-TWO-TIAT/extrusion-lookdev/depths/selfmade/source.jpg",
   "engines": {
     "chatgpt": {
       "engine": "chatgpt",
@@ -29,12 +29,33 @@
       "model": "Depth-Anything-3 GIANT-1.1 1B (local, MPS)",
       "elapsed_s": 118.4
     },
+    "fuse_nano": {
+      "engine": "fuse_nano",
+      "file": "fuse_nano.png",
+      "kind": "fusion",
+      "model": "DA2 + Nano Banana Pro detail (hybrid)",
+      "elapsed_s": 0.3
+    },
+    "fuse_normal": {
+      "engine": "fuse_normal",
+      "file": "fuse_normal.png",
+      "kind": "fusion",
+      "model": "DA2 + Marigold-Normals detail (local, MPS)",
+      "elapsed_s": 12.7
+    },
     "marigold": {
       "engine": "marigold",
       "file": "marigold.png",
       "kind": "depth-net",
       "model": "Marigold LCM (local, MPS, diffusers)",
       "elapsed_s": 202.0
+    },
+    "meshy": {
+      "engine": "meshy",
+      "file": "meshy.png",
+      "kind": "image-to-3d",
+      "model": "Meshy-6 image-to-3D (fal) \u2192 front depth",
+      "elapsed_s": 92
     },
     "midas": {
       "engine": "midas",

@@ -1,0 +1,41 @@
+<!doctype html><html><head><meta charset="utf-8"><title>glb→depth</title>
+<style>html,body{margin:0;background:#000}#c{display:block}</style></head><body>
+<canvas id="c" width="1024" height="1024"></canvas>
+<script type="importmap">{ "imports": {
+  "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" }}</script>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+// Render a GLB to a FRONT-facing orthographic DEPTH map (white = nearest to camera).
+// Used to slot a direct image-to-3D mesh into the heightfield comparison studio.
+const params = new URLSearchParams(location.search);
+const glbUrl = params.get('glb');
+window.__done = false; window.__err = null;
+const W = 1024, H = 1024;
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({canvas, antialias:false, preserveDrawingBuffer:true});
+renderer.setSize(W, H, false);
+const scene = new THREE.Scene();
+new GLTFLoader().load(glbUrl, (gltf)=>{
+  try{
+    const obj = gltf.scene;
+    // depth material so the render encodes distance, not shading
+    obj.traverse(o=>{ if(o.isMesh){ o.material = new THREE.MeshDepthMaterial(); } });
+    scene.add(obj);
+    // fit an orthographic camera looking along -Z (the front the photo was taken from)
+    const box = new THREE.Box3().setFromObject(obj);
+    const c = box.getCenter(new THREE.Vector3()), s = box.getSize(new THREE.Vector3());
+    const maxXY = Math.max(s.x, s.y) * 0.5 * 1.04;
+    const cam = new THREE.OrthographicCamera(-maxXY, maxXY, maxXY, -maxXY, 0.001, s.z*2 + 1);
+    cam.position.set(c.x, c.y, box.max.z + s.z*0.5);
+    cam.lookAt(c.x, c.y, c.z);
+    // MeshDepthMaterial: near=white(1)→far=black(0) within [near,far]; set range to the mesh depth
+    cam.near = 0.001; cam.far = s.z * 1.0 + 1e-3;
+    cam.updateProjectionMatrix();
+    renderer.render(scene, cam);
+    window.__dataurl = canvas.toDataURL('image/png');
+    window.__done = true;
+  }catch(e){ window.__err = String(e); window.__done = true; }
+}, undefined, (e)=>{ window.__err = 'load failed: '+e; window.__done = true; });
+</script></body></html>

@@ -20,6 +20,20 @@ Only the closed-weight image models are hosted.
 | `midas` | depth net | **local** | MiDaS / DPT-Hybrid (HF transformers) |
 | `nanobanana` | generative guess | hosted | Nano Banana Pro / Gemini-3-Pro-Image (fal) — closed weights |
 | `chatgpt` | generative guess | hosted | ChatGPT Image / gpt-image-1 (OpenAI) — closed weights |
+| `fuse_normal` | fusion | **local** | DA2 global shape + fine relief from Marigold surface-normals (Frankot-Chellappa integrated) |
+| `fuse_nano` | fusion | hybrid | DA2 global shape + Nano Banana's high-frequency detail |
+| `meshy` | image→3D | hosted | Meshy-6 single-image-to-3D (fal) → GLB, front-depth rendered via `glb_depth.html` |
+
+**Fusion** (`fuse_*`): a depth net gets the *global* shape right but smooths detail; the
+fused maps keep DA2's full structure and ADD a detail source's high frequencies
+(`base + α·highpass(detail)`). `fuse_normal` is fully local (Marigold-Normals → integrate
+→ inject); `fuse_nano` injects Nano Banana's detail. Both need `da2.png` (and the detail
+engine) generated first.
+
+**Image-to-3D** (`meshy`): direct single-image-to-3D reconstructs a *full rounded object*,
+not a relief — run via `meshy_gen.py` (fal queue → GLB), then rendered to a front-facing
+depth by `glb_depth.html` (headless three.js, MeshDepthMaterial). Included as the
+"best/likeliest" direct-3D comparison; it tends to produce a shallow, smoothed slab.
 
 "generative guess" = an image model *prompted* for a height map. It looks plausible but
 is **not** metric depth (gpt-image-1 in particular tends to ignore the instruction and
