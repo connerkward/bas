@@ -78,7 +78,8 @@ const kindStyle=k=>KIND[k]||KIND['depth-net'];
 // ---------- state ----------
 const S={ relief:40, base:6, gamma:1, contrast:1, floor:0, smooth:1, invert:false, collapse:true,
   res:300, hybrid:false, baseEng:'da2', detailEng:'nanobanana', alpha:0.5, sigma:7,
-  clamp:0.12, dgamma:0.85, bgsupp:0.7, mlo:0.45, mhi:0.72, imgbump:0.45, edgesnap:0.3 };
+  clamp:0.12, dgamma:0.85, bgsupp:0.7, mlo:0.45, mhi:0.72, imgbump:0.45, edgesnap:0.3,
+  segground:0.7, groundLevel:0.1 };
 
 // ---------- three ----------
 const canvas=document.getElementById('c');
@@ -152,12 +153,16 @@ function gridFor(engKey,nx,ny){
     let srcG=null, srcHp=null;
     if(S.imgbump>0 && srcBuf){ srcG=sampleGrid(srcBuf,nx,ny); const sb=boxBlur(srcG,nx,ny,S.sigma);
       srcHp=new Float32Array(nx*ny); for(let i=0;i<nx*ny;i++) srcHp[i]=srcG[i]-sb[i]; }
+    // when a segmentation mask + ground recession are active, hard-gate ALL detail to the
+    // figure so the recessed ground stays clean (no hallucinated texture to flatten later)
+    const segG = (maskBuf && S.segground>0) ? sampleGrid(maskBuf,nx,ny) : null;
     const fused=new Float32Array(nx*ny);
     for(let i=0;i<nx*ny;i++){
       let hp=det[i]-detBlur[i];                                    // Nano fine detail
       if(S.dgamma!==1) hp=Math.sign(hp)*Math.pow(Math.abs(hp)*2,S.dgamma)/2;  // boost/suppress faint detail
       if(S.clamp>0) hp=Math.tanh(hp/S.clamp)*S.clamp;              // soft-knee: kill spikes
       let m=mask?(1-S.bgsupp*(1-mask[i])):1;
+      if(segG) m*=segG[i];                                         // gate detail to the figure
       let v=base[i]+S.alpha*hp*m;
       if(srcHp) v+=S.imgbump*srcHp[i]*m;                           // + real photo detail (figure-gated)
       fused[i]=v;
@@ -191,7 +196,13 @@ function heightfieldSolid(nx,ny,W,H,topZ,zBot){
 function buildPiece(engKey){
   const W=160, H=W*pieceAspect;
   const nx=Math.max(8,Math.round(S.res)), ny=Math.max(8,Math.round(S.res*pieceAspect));
-  let g=gridFor(engKey,nx,ny); g=boxBlur(g,nx,ny,S.smooth); g=remap(g);
+  let g=gridFor(engKey,nx,ny);
+  // segment ground: recess everything OFF the figure (rembg mask) to a clean flat ground —
+  // depth can't separate figure from carved ground in low relief, a real mask can.
+  if(S.segground>0 && maskBuf){ const fm=sampleGrid(maskBuf,nx,ny);
+    for(let i=0;i<g.length;i++){ const m=fm[i];
+      g[i]=m*g[i] + (1-m)*((1-S.segground)*g[i] + S.segground*S.groundLevel); } }
+  g=boxBlur(g,nx,ny,S.smooth); g=remap(g);
   const topZ=new Float32Array(nx*ny);
   for(let i=0;i<nx*ny;i++) topZ[i]=S.base+g[i]*S.relief;
   const geo=heightfieldSolid(nx,ny,W,H,topZ,0);
@@ -242,11 +253,12 @@ function resize(){ const w=canvas.clientWidth,h=canvas.clientHeight;
     renderer.setSize(w,h,false); camera.aspect=w/h; camera.updateProjectionMatrix(); } }
 
 // ---------- load ----------
-let srcBuf=null;
+let srcBuf=null, maskBuf=null;
 async function loadSource(skey){
   srcKey=skey; const base='depths/'+skey+'/';
   try{ const s=await loadImg(base+'source.jpg'); img.src=s.src; pieceAspect=s.naturalHeight/s.naturalWidth;
        srcBuf=bufFrom(s); }catch(e){ srcBuf=null; }
+  maskBuf=null; try{ const fm=await loadImg(base+'figmask.png'); maskBuf=bufFrom(fm); }catch(e){}
   const mani=await fetch(base+'manifest.json').then(r=>r.json()).catch(()=>({engines:{}}));
   const keys=Object.keys(mani.engines||{}).sort((a,b)=>ENG_ORDER.indexOf(a)-ENG_ORDER.indexOf(b));
   ENGINES=[]; engByKey={};
@@ -327,6 +339,14 @@ function buildPanel(){
   const hn=document.createElement('div');hn.className='note';
   hn.textContent='fused = base + α·gate(clamp(γ(highpass(detail,σ)))). Background-suppression masks detail off the flat panel using the base height (mask lo→hi), so the figure gains Nano detail while the background stays clean — the main lever for DA2⊕Nano relief quality.';
   hb.appendChild(hn); p.appendChild(hb);
+
+  sec('Figure / ground (segmentation)');
+  p.appendChild(slider('segground',0,1,0.05,'Recess ground off the figure'));
+  p.appendChild(slider('groundLevel',0,0.5,0.01,'Ground level (recess depth)'));
+  const sn=document.createElement('div');sn.className='note';
+  sn.textContent = maskBuf ? 'rembg figure mask loaded — raises the figure with detail over a clean recessed ground (depth alone can’t separate them in low relief).'
+    : 'No figmask.png for this source — run  pipeline/segmask.py --key '+srcKey;
+  p.appendChild(sn);
 
   sec('Extrusion');
   p.appendChild(slider('relief',2,150,1,'Relief height (mm)'));
