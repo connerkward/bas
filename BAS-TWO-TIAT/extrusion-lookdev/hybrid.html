@@ -318,7 +318,12 @@ function buildPanel(){
   p.appendChild(check('compare','Compare all engines side by side'));
 
   sec('Hybrid (base ⊕ detail)');
-  p.appendChild(check('hybrid','Hybrid mode — fuse a base + detail live'));
+  { const l=document.createElement('label');l.className='chk';
+    const c=document.createElement('input');c.type='checkbox';c.checked=S.hybrid;
+    c.addEventListener('change',()=>{ S.hybrid=c.checked;
+      const box=document.getElementById('hybridBox'); if(box) box.classList.toggle('on',c.checked);
+      rebuild(); });
+    l.append(c,document.createTextNode('Hybrid mode — fuse a base + detail live')); p.appendChild(l); }
   const hb=document.createElement('div');hb.id='hybridBox';hb.className=S.hybrid?'on':'';
   const mkSel=(keyOf,label)=>{ const w=document.createElement('div');w.style.margin='6px 0';
     const l=document.createElement('label');l.style.cssText='font-size:11px;color:var(--mut);display:block;margin-bottom:3px';l.textContent=label;
