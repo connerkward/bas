@@ -1,0 +1,7 @@
+{
+  "engine": "midas",
+  "file": "midas.png",
+  "kind": "depth-net",
+  "model": "MiDaS / DPT-Hybrid (local, MPS)",
+  "elapsed_s": 54.6
+}

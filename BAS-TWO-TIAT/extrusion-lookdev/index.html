@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Relief Lookdev</title>
+<title>Extrusion Lookdev — depth-engine comparison</title>
 <style>
   :root { --paper:#15171c; --ink:#e8e6e1; --mut:#9aa0aa; --line:#2c313b; --accent:#7db4ff; }
   * { box-sizing:border-box; }
@@ -211,39 +211,52 @@ const mats = {
   xrayEdge: new THREE.LineBasicMaterial({color:0x6effe0}), // crisp carve-floor edge (cached; rebuild() recreates the mesh each time)
 };
 
-// ---------- depth source ----------
-const img = new Image();              // original — also the crop thumbnail
-let imgData=null, IW=0, IH=0;         // ACTIVE source buffer (sampleGrid/lumAt read these)
-let srcOrig=null, srcUp=null;
+// ---------- depth sources: one per engine, from depths/manifest.json ----------
+const img = new Image();              // SOURCE photo — crop thumbnail only
+let imgData=null, IW=0, IH=0;         // ACTIVE engine buffer (sampleGrid/lumAt fall back to these)
+let ENGINES=[];                       // [{key,name,kind,model,buf:{data,W,H}}]
+let activeIdx=0, compareMode=false;
+let pieceAspect=1.4;                  // shared plaque aspect (H/W) taken from the source photo
 function bufFrom(im){ const c=document.createElement('canvas'); c.width=im.naturalWidth; c.height=im.naturalHeight;
   const x=c.getContext('2d'); x.drawImage(im,0,0);
   return {data:x.getImageData(0,0,im.naturalWidth,im.naturalHeight).data, W:im.naturalWidth, H:im.naturalHeight}; }
 function setActive(s){ if(!s) return; imgData=s.data; IW=s.W; IH=s.H; }
-img.onload = () => {
-  srcOrig=bufFrom(img); setActive(srcOrig);
+const ENG_LABELS={da2:'Depth-Anything-V2',da3:'Depth-Anything-3',marigold:'Marigold',
+  midas:'MiDaS',nanobanana:'Nano Banana Pro',chatgpt:'ChatGPT Image'};
+function loadImg(src){ return new Promise((res,rej)=>{ const im=new Image();
+  im.onload=()=>res(im); im.onerror=rej; im.src=src; }); }
+async function init(){
+  try{ const s=await loadImg('pipeline/source.jpg'); img.src=s.src;
+       pieceAspect=s.naturalHeight/s.naturalWidth; }catch(e){}
+  const mani=await fetch('depths/manifest.json').then(r=>r.json()).catch(()=>({engines:{}}));
+  const order=['da2','da3','marigold','midas','nanobanana','chatgpt'];
+  const keys=Object.keys(mani.engines||{}).sort((a,b)=>order.indexOf(a)-order.indexOf(b));
+  for(const k of keys){ const e=mani.engines[k];
+    try{ const im=await loadImg('depths/'+e.file);
+      ENGINES.push({key:k,name:ENG_LABELS[k]||k,kind:e.kind,model:e.model,buf:bufFrom(im)}); }catch(err){}
+  }
+  if(!ENGINES.length){ document.getElementById('hud').textContent=
+    'No depth maps found — run  pipeline/gen_depth.py  to populate depths/'; return; }
+  activeIdx=0; setActive(ENGINES[0].buf);
   buildPanel(); rebuild(); frameCamera(); pushHist(); loop();
-  // lazily pick up the 4×-UltraSharp bake if it exists
-  const up=new Image(); up.onload=()=>{ srcUp=bufFrom(up); markUpscale(true);
-    if(state.upscaled){ setActive(srcUp); rebuild(); } };
-  up.onerror=()=>markUpscale(false); up.src='depth-up.jpg';
-};
-img.src = 'depth.png';
+}
+init();
 
-// luminance 0..1 at integer pixel
-function lumAt(x,y){ const i=(y*IW+x)*4; return (0.299*imgData[i]+0.587*imgData[i+1]+0.114*imgData[i+2])/255; }
+// luminance 0..1 at integer pixel of a given buffer
+function lumAt(buf,x,y){ const d=buf.data, i=(y*buf.W+x)*4; return (0.299*d[i]+0.587*d[i+1]+0.114*d[i+2])/255; }
 
 // ---------- build the relief grid (heights in 0..1 before scaling) ----------
-function sampleGrid(nx, ny){
-  // bilinear sample the cropped region into nx*ny. depth map: white=near=tall.
-  const cr=state.crop||{x:0,y:0,w:1,h:1};
+function sampleGrid(buf, nx, ny){
+  // bilinear sample the cropped region of `buf` into nx*ny. depth map: white=near=tall.
+  const cr=state.crop||{x:0,y:0,w:1,h:1}, W=buf.W, H=buf.H;
   const g=new Float32Array(nx*ny);
   for(let j=0;j<ny;j++){
-    const v=j/(ny-1), sy=(cr.y+v*cr.h)*(IH-1);
-    const y0=Math.floor(sy), y1=Math.min(IH-1,y0+1), fy=sy-y0;
+    const v=j/(ny-1), sy=(cr.y+v*cr.h)*(H-1);
+    const y0=Math.floor(sy), y1=Math.min(H-1,y0+1), fy=sy-y0;
     for(let i=0;i<nx;i++){
-      const u=i/(nx-1), sx=(cr.x+u*cr.w)*(IW-1);
-      const x0=Math.floor(sx), x1=Math.min(IW-1,x0+1), fx=sx-x0;
-      const a=lumAt(x0,y0), b=lumAt(x1,y0), c=lumAt(x0,y1), d=lumAt(x1,y1);
+      const u=i/(nx-1), sx=(cr.x+u*cr.w)*(W-1);
+      const x0=Math.floor(sx), x1=Math.min(W-1,x0+1), fx=sx-x0;
+      const a=lumAt(buf,x0,y0), b=lumAt(buf,x1,y0), c=lumAt(buf,x0,y1), d=lumAt(buf,x1,y1);
       g[j*nx+i]=(a*(1-fx)+b*fx)*(1-fy)+(c*(1-fx)+d*fx)*fy;
     }
   }
@@ -276,69 +289,99 @@ function remap(g){
 
 // ---------- geometry ----------
 let lastStats={};
-function rebuild(){
-  syncBounds();
-  while(grp.children.length){ const m=grp.children.pop(); m.geometry?.dispose(); }
+let labelSprites=[];
+function disposeGrp(){
+  for(const sp of labelSprites){ sp.material.map?.dispose(); sp.material.dispose(); }
+  labelSprites=[];
+  while(grp.children.length){ const m=grp.children.pop();
+    m.traverse?.(o=>{ o.geometry?.dispose?.(); }); m.geometry?.dispose?.(); }
+}
+// build ONE engine's relief block as a self-contained group, centred at its own origin,
+// relief facing +Z. Returns the merged geometry + stats so callers can lay several out.
+function buildPiece(buf){
   const s=state;
   const base=Math.min(s.boardMM, Math.max(0, s.backplateMM)); // solid backing you set
   const relief=Math.max(0, s.boardMM - base);                  // carve uses the rest of the board
   const cr=s.crop||{x:0,y:0,w:1,h:1};
-  const aspect=(cr.h*IH)/(cr.w*IW);                            // plaque aspect follows the crop
+  const aspect=(cr.h/cr.w)*pieceAspect;                        // uniform plaque aspect across engines
   const W=s.widthMM, H=W*aspect;
   const border=s.frameThickMM, gap=s.gapMM;
   const inW=Math.max(4, W-2*(border+gap)), inH=Math.max(4, H-2*(border+gap));
 
-  // sample interior heightfield
   const nx=Math.max(8, Math.round(s.res));
   const ny=Math.max(8, Math.round(s.res*aspect));
-  let g=sampleGrid(nx,ny); g=boxBlur(g,nx,ny,s.blur); g=remap(g);
+  let g=sampleGrid(buf,nx,ny); g=boxBlur(g,nx,ny,s.blur); g=remap(g);
 
-  const reliefTop = base + relief;              // z of a pure-white pixel = board top face
-  const frameTopZ = reliefTop + s.frameExtraMM; // frame surface height (≤ board top)
-
-  // --- interior relief as a SOLID rooted on the backplate (top at base+h*relief, bottom at base) ---
+  const frameTopZ = base + relief + s.frameExtraMM; // frame surface height (≤ board top)
   const topZ=new Float32Array(nx*ny);
   for(let j=0;j<ny;j++) for(let i=0;i<nx;i++) topZ[j*nx+i]=base + g[j*nx+i]*relief;
   const solid=heightfieldSolid(nx,ny,inW,inH,topZ,base);
 
   const geos=[solid];
-
-  // --- solid base slab (full footprint, 0..base) ---
-  if(base>0) geos.push(boxAt(W,H,base, 0,0, base/2));
-
-  // --- frame: 4 bars on border, base..frameTopZ ---
+  if(base>0) geos.push(boxAt(W,H,base, 0,0, base/2));         // solid base slab
   const fh=frameTopZ - base;
-  if(border>0 && fh>0){
-    const zc=base+fh/2;
-    geos.push(boxAt(W, border, fh, 0,  (H-border)/2, zc)); // top
-    geos.push(boxAt(W, border, fh, 0, -(H-border)/2, zc)); // bottom
-    geos.push(boxAt(border, H-2*border, fh, -(W-border)/2, 0, zc)); // left
-    geos.push(boxAt(border, H-2*border, fh,  (W-border)/2, 0, zc)); // right
-  }
+  if(border>0 && fh>0){ const zc=base+fh/2;                   // 4 frame bars
+    geos.push(boxAt(W, border, fh, 0,  (H-border)/2, zc));
+    geos.push(boxAt(W, border, fh, 0, -(H-border)/2, zc));
+    geos.push(boxAt(border, H-2*border, fh, -(W-border)/2, 0, zc));
+    geos.push(boxAt(border, H-2*border, fh,  (W-border)/2, 0, zc)); }
 
   const merged=mergeGeometries(geos, false) || solid;
   merged.computeVertexNormals();
   const mainMat = state.xray ? mats.ghost : mats[state.shade==='normal'?'normal':'clay'];
   mainMat.wireframe = state.wire && !state.xray;
-  const mesh=new THREE.Mesh(merged, mainMat);
-  mesh.castShadow=true; mesh.receiveShadow=true;
-  grp.add(mesh);
-
-  // --- X-ray: solid backplate slab (z 0..base) so its thickness is directly visible ---
-  if(state.xray && base>0){
+  const pg=new THREE.Group();
+  const mesh=new THREE.Mesh(merged, mainMat); mesh.castShadow=true; mesh.receiveShadow=true;
+  pg.add(mesh);
+  if(state.xray && base>0){                                   // ghost relief + show backplate slab
     const slab=boxAt(W,H,base,0,0,base/2);
-    grp.add(new THREE.Mesh(slab, mats.back));
-    grp.add(new THREE.LineSegments(new THREE.EdgesGeometry(slab), mats.xrayEdge));
-  }
-  // stand it upright: relief faces world +Z, so the ViewCube's FRONT shows the carved face.
-  grp.rotation.set(0,0,0);
-  grp.position.set(0, 0, -(s.boardMM)/2);
-
-  // stats
-  lastStats={W:W.toFixed(0),H:H.toFixed(0),board:s.boardMM,
+    pg.add(new THREE.Mesh(slab, mats.back));
+    pg.add(new THREE.LineSegments(new THREE.EdgesGeometry(slab), mats.xrayEdge)); }
+  pg.position.z = -s.boardMM/2;                               // centre the block in z
+  const stats={W:W.toFixed(0),H:H.toFixed(0),board:s.boardMM,
     relief:relief.toFixed(1), back:base.toFixed(1),
     tris:(merged.attributes.position.count/3)|0};
-  window._mergedGeo=merged;
+  return {pg, merged, W, H, stats};
+}
+// engine name + kind badge floating above a piece (compare mode)
+function makeLabel(eng, active){
+  const c=document.createElement('canvas'); c.width=512; c.height=140;
+  const x=c.getContext('2d');
+  x.fillStyle=active?'rgba(125,180,255,0.96)':'rgba(16,18,22,0.92)';
+  x.beginPath(); x.roundRect(4,4,504,132,16); x.fill();
+  x.strokeStyle=active?'#dbe9ff':'#3a4150'; x.lineWidth=3; x.stroke();
+  x.textAlign='center'; x.textBaseline='middle';
+  x.fillStyle=active?'#06101f':'#e8e6e1'; x.font='bold 44px ui-monospace,monospace';
+  x.fillText(eng.name, 256, 54);
+  x.font='24px ui-monospace,monospace'; x.fillStyle=active?'#143a6e':(eng.kind==='generative'?'#e0a35a':'#7db4ff');
+  x.fillText(eng.kind==='generative'?'◇ generative guess':'● depth net', 256, 100);
+  const tex=new THREE.CanvasTexture(c); tex.anisotropy=4;
+  const sp=new THREE.Sprite(new THREE.SpriteMaterial({map:tex, transparent:true, depthTest:false}));
+  sp.renderOrder=10; return sp;
+}
+function rebuild(){
+  syncBounds();
+  disposeGrp();
+  const pieces = compareMode ? ENGINES : (ENGINES[activeIdx]?[ENGINES[activeIdx]]:[]);
+  if(!pieces.length) return;
+  const built = pieces.map(e=>({e, ...buildPiece(e.buf)}));
+  const maxW=Math.max(...built.map(b=>b.W)), maxH=Math.max(...built.map(b=>b.H));
+  const gapX=maxW*0.18;
+  const totalW=built.reduce((a,b)=>a+b.W,0)+gapX*(built.length-1);
+  let x=-totalW/2;
+  built.forEach(b=>{
+    b.pg.position.x = x + b.W/2; x += b.W + gapX;
+    grp.add(b.pg);
+    if(compareMode){
+      const sp=makeLabel(b.e, b.e===ENGINES[activeIdx]);
+      sp.scale.set(maxW*0.62, maxW*0.62*140/512, 1);
+      sp.position.set(b.pg.position.x, maxH/2 + maxH*0.14, 0);
+      grp.add(sp); labelSprites.push(sp);
+    }
+  });
+  grp.rotation.set(0,0,0); grp.position.set(0,0,0);
+  const act = built.find(b=>b.e===ENGINES[activeIdx]) || built[0];
+  lastStats=act.stats; window._mergedGeo=act.merged;
   drawSheets(); placeRig();
 }
 function boxAt(w,h,d,cx,cy,cz){
@@ -406,7 +449,10 @@ function updateHUD(){
   const msg=bad?'  ⚠ too thin — XPS will crumble':warn?'  ⚠ thin for XPS (&lt; 1/2\")':'';
   const sheets=sheetCount(+s.W,+s.H);
   const sheetTxt = sheets<=1 ? `· fits 1 XPS sheet (${SHEET.label})` : `· ${sheets} XPS sheets (${SHEET.label}, glued)`;
-  document.getElementById('hud').innerHTML =
+  const e=ENGINES[activeIdx];
+  const eCol=e&&e.kind==='generative'?'#e0a35a':'#7db4ff';
+  const eLine=e?`<span style="color:${eCol}">${compareMode?'compare · ':''}${e.name} — ${e.kind==='generative'?'generative guess':'depth net'}</span>\n`:'';
+  document.getElementById('hud').innerHTML = eLine +
     `plaque  ${s.W} × ${s.H} mm  (${(s.W/25.4).toFixed(1)}" × ${(s.H/25.4).toFixed(1)}")  ${sheetTxt}\n`+
     `XPS board  ${lbl} (${s.board} mm)   carve depth ${s.relief} mm\n`+
     `<span style="color:${col}">backplate  ${s.back} mm${msg}</span>   tris ${s.tris.toLocaleString()}`;
@@ -549,8 +595,9 @@ function buildPanel(){
   p.appendChild(check('wire','Wireframe'));
   p.appendChild(shadeToggle());
 
-  sec('Source');
-  p.appendChild(upscaleToggle());
+  sec('Depth engine');
+  p.appendChild(engineSelector());
+  p.appendChild(compareToggle());
 
   sec('Inspect');
   p.appendChild(perspToggle());
@@ -635,7 +682,7 @@ let cropCv=null, cropRAF=0;
 function scheduleRebuild(){ if(cropRAF) return; cropRAF=requestAnimationFrame(()=>{cropRAF=0; rebuild();}); }
 function buildCrop(p){
   const h=document.createElement('h2'); h.textContent='Crop source'; p.appendChild(h);
-  const cw=264, ch=Math.round(cw*IH/IW);
+  const cw=264, ch=Math.round(cw*pieceAspect);
   cropCv=document.createElement('canvas'); cropCv.width=cw; cropCv.height=ch;
   cropCv.style.cssText=`width:${cw}px;height:${ch}px;display:block;border:1px solid var(--line);border-radius:4px;cursor:crosshair;touch-action:none`;
   p.appendChild(cropCv);
@@ -725,6 +772,41 @@ function check(k,label){
   c.addEventListener('change',()=>{state[k]=c.checked;rebuild();refreshJSON();pushHist();});
   l.append(c,document.createTextNode(label)); return l;
 }
+// ---- depth-engine selector + side-by-side compare ----
+let engBtns=[];
+function engineSelector(){
+  const wrap=document.createElement('div');
+  const row=document.createElement('div'); row.className='btnrow';
+  engBtns=[];
+  ENGINES.forEach((e,k)=>{
+    const b=document.createElement('button');
+    b.textContent=e.name; b.title=e.model||'';
+    b.style.cssText='flex:1 1 46%;padding:5px 6px;font-size:10px;text-align:left';
+    const dot=document.createElement('span');
+    dot.style.cssText=`display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:5px;vertical-align:middle;background:${e.kind==='generative'?'#e0a35a':'#7db4ff'}`;
+    b.prepend(dot);
+    b.onclick=()=>selectEngine(k);
+    engBtns.push(b); row.appendChild(b);
+  });
+  const note=document.createElement('div'); note.className='note';
+  note.innerHTML='<span style="color:#7db4ff">●</span> depth net (true monocular depth) &nbsp; <span style="color:#e0a35a">◇</span> generative guess (image model — looks plausible, not metric)';
+  wrap.append(row,note); markEngine(); return wrap;
+}
+function selectEngine(k){ activeIdx=k; setActive(ENGINES[k].buf); markEngine(); rebuild(); refreshJSON(); }
+function markEngine(){ engBtns.forEach((b,k)=>{ const on=k===activeIdx;
+  b.style.background=on?'var(--accent)':'#1b1f27'; b.style.color=on?'#06101f':'var(--ink)';
+  b.style.borderColor=on?'var(--accent)':'var(--line)'; b.style.fontWeight=on?'700':'400'; }); }
+let cmpChk=null;
+function compareToggle(){
+  const l=document.createElement('label'); l.className='chk';
+  cmpChk=document.createElement('input'); cmpChk.type='checkbox'; cmpChk.checked=compareMode;
+  cmpChk.addEventListener('change',()=>{ compareMode=cmpChk.checked; rebuild(); frameCamera(); });
+  l.append(cmpChk,document.createTextNode('Compare all engines side by side'));
+  const w=document.createElement('div'); w.appendChild(l);
+  const note=document.createElement('div'); note.className='note';
+  note.textContent='Selected engine (highlighted) drives the HUD stats, sheet layout and STL export.';
+  w.appendChild(note); return w;
+}
 let upChk=null, upNote=null;
 function upscaleToggle(){
   const l=document.createElement('label'); l.className='chk';
@@ -812,9 +894,8 @@ function syncInputs(){
   // backfill look keys for settings saved before material/lighting existed
   ['matColor','matRough','matMetal','lightAmb','lightAbove','lightBelow']
     .forEach(k=>{ if(state[k]===undefined) state[k]=DEFAULTS[k]; });
-  if(upChk) upChk.checked=state.upscaled;
   if(presChk) presChk.checked=state.present;
-  setActive(state.upscaled&&srcUp?srcUp:srcOrig);
+  setActive(ENGINES[activeIdx]?.buf);
   syncLive(); applyMaterial();
   setPresent(state.present); // calls applyLights()
   markBoard(); syncBounds(); if(cropCv) drawCrop();
@@ -865,7 +946,7 @@ function buildStlWithMeta(){
 function exportSTL(){
   if(!window._mergedGeo) return;
   const {stl,json}=buildStlWithMeta();
-  const base=`relief_${state.widthMM}x${(state.widthMM*IH/IW).toFixed(0)}mm`;
+  const base=`relief_${ENGINES[activeIdx]?.key||'x'}_${state.widthMM}x${(state.widthMM*IH/IW).toFixed(0)}mm`;
   // zip the metadata-embedded STL together with a standalone settings.json
   const zip=zipSync({ [`${base}.stl`]: stl, [`${base}.settings.json`]: json }, {level:6});
   const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([zip],{type:'application/zip'}));
