@@ -84,6 +84,19 @@ const S={ relief:40, base:6, gamma:1, contrast:1, floor:0, smooth:1, invert:fals
   clamp:0.0, dgamma:1.0, bgsupp:0.0, mlo:0.45, mhi:0.72, imgbump:0.0, edgesnap:0.0,
   segground:0.0, groundLevel:0.12 };
 
+// Per-source tuned starting points (judged against each input): figure sources get
+// face-defining image-bump (real photo detail) + a clean recessed seg-ground; the
+// abstract/busy panels get a clean fusion with no segmentation. User can still tune.
+const SOURCE_PRESETS = {
+  // clean DA2⊕Nano (one detail layer) defines faces as well as the data allows without
+  // graining the surface; light spike-clamp keeps it machineable; figures get a clean
+  // recessed seg-ground. NO image-bump/edge-snap (they re-add the photo's stone grain).
+  selfmade:  {hybrid:true, alpha:0.6,  sigma:6, imgbump:0.0, clamp:0.1, dgamma:1.0, edgesnap:0.0, bgsupp:0.0, segground:0.6, groundLevel:0.1, smooth:1},
+  tondo:     {hybrid:true, alpha:0.6,  sigma:6, imgbump:0.0, clamp:0.1, dgamma:1.0, edgesnap:0.0, bgsupp:0.0, segground:0.5, groundLevel:0.1, smooth:1},
+  modernist: {hybrid:true, alpha:0.4,  sigma:6, imgbump:0.0, clamp:0.1, dgamma:1.0, edgesnap:0.0, bgsupp:0.0, segground:0.0, smooth:1.5},
+  woodpanel: {hybrid:true, alpha:0.55, sigma:6, imgbump:0.0, clamp:0.1, dgamma:1.0, edgesnap:0.0, bgsupp:0.0, segground:0.0, smooth:1},
+};
+
 // ---------- three ----------
 const canvas=document.getElementById('c');
 const renderer=new THREE.WebGLRenderer({canvas,antialias:true});
@@ -269,8 +282,10 @@ async function loadSource(skey){
     try{ const im=await loadImg(base+e.file); const o={key:k,name:ENG_LABELS[k]||k,kind:e.kind,model:e.model,buf:bufFrom(im)};
       ENGINES.push(o); engByKey[k]=o; }catch(err){} }
   activeIdx=0;
+  S.baseEng='da2'; S.detailEng='nanobanana';
   if(!engByKey[S.baseEng]) S.baseEng=ENGINES[0]?.key;
-  if(!engByKey[S.detailEng]) S.detailEng=(ENGINES.find(e=>e.kind==='normals')||ENGINES[ENGINES.length-1]||{}).key;
+  if(!engByKey[S.detailEng]) S.detailEng=(ENGINES.find(e=>e.kind==='generative')||ENGINES[ENGINES.length-1]||{}).key;
+  if(SOURCE_PRESETS[skey]) Object.assign(S, SOURCE_PRESETS[skey]);  // per-source tuned defaults
   buildPanel(); rebuild(); frameCamera();
 }
 async function init(){
