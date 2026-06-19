@@ -94,7 +94,9 @@ const SOURCE_PRESETS = {
   selfmade:  {hybrid:true, alpha:0.6,  sigma:6, imgbump:0.0, clamp:0.1, dgamma:1.0, edgesnap:0.0, bgsupp:0.0, segground:0.6, groundLevel:0.1, smooth:1},
   tondo:     {hybrid:true, alpha:0.6,  sigma:6, imgbump:0.0, clamp:0.1, dgamma:1.0, edgesnap:0.0, bgsupp:0.0, segground:0.5, groundLevel:0.1, smooth:1},
   modernist: {hybrid:true, alpha:0.4,  sigma:6, imgbump:0.0, clamp:0.1, dgamma:1.0, edgesnap:0.0, bgsupp:0.0, segground:0.0, smooth:1.5},
-  woodpanel: {hybrid:true, alpha:0.55, sigma:6, imgbump:0.0, clamp:0.1, dgamma:1.0, edgesnap:0.0, bgsupp:0.0, segground:0.0, smooth:1},
+  // dense scene: lower detail + more smoothing so it reads as carved figures (not a lumpy
+  // noise field) from grazing/below angles, while staying legible from the front
+  woodpanel: {hybrid:true, alpha:0.35, sigma:6, imgbump:0.0, clamp:0.08, dgamma:1.0, edgesnap:0.0, bgsupp:0.0, segground:0.0, smooth:2.0},
 };
 
 // ---------- three ----------
@@ -256,12 +258,17 @@ function rebuild(){
   lastStats=`${pieces.length>1?'compare · '+pieces.length+' engines':pieces[0].name}\nrelief ${S.relief}mm · base ${S.base}mm · ${act.tris.toLocaleString()} tris/piece`;
 }
 let camFramed=false;
-function frameCamera(){
+function frameCamera(){ setView(20, 16); }
+// az: 0=front, +right/−left (deg). el: +above / −below (deg). View the relief from any rake.
+function setView(az, el){
   const box=new THREE.Box3().setFromObject(grp); if(!isFinite(box.min.x))return;
   const s=box.getSize(new THREE.Vector3()),c=box.getCenter(new THREE.Vector3()),r=Math.max(s.x,s.y,s.z);
-  controls.target.copy(c); camera.position.set(c.x+r*0.35,c.y+r*0.4,c.z+r*1.7);
+  const a=az*Math.PI/180, e=el*Math.PI/180, d=r*1.7;
+  controls.target.copy(c); camera.up.set(0,1,0);
+  camera.position.set(c.x+d*Math.cos(e)*Math.sin(a), c.y+d*Math.sin(e), c.z+d*Math.cos(e)*Math.cos(a));
   camera.near=Math.max(0.1,r/100); camera.far=r*40; camera.updateProjectionMatrix();
 }
+window.__view=setView;
 function loop(){ requestAnimationFrame(loop); controls.update(); resize();
   document.getElementById('hud').textContent=lastStats; renderer.render(scene,camera); }
 function resize(){ const w=canvas.clientWidth,h=canvas.clientHeight;
@@ -386,7 +393,11 @@ function buildPanel(){
 
   sec('View');
   const vb=document.createElement('div');vb.className='btnrow';
-  const rv=document.createElement('button');rv.textContent='Reset view';rv.onclick=frameCamera;vb.appendChild(rv);
+  [['Front',0,8],['¾ R',24,16],['¾ L',-24,16],['Left',-55,6],['Right',55,6],
+   ['Below',0,-32],['Below L',-24,-28],['Top',0,60]].forEach(([t,a,e])=>{
+    const b=document.createElement('button');b.textContent=t;b.style.cssText='flex:0 0 auto;padding:5px 7px';
+    b.onclick=()=>setView(a,e); vb.appendChild(b); });
+  const rb=document.createElement('button');rb.textContent='Reset';rb.onclick=frameCamera;vb.appendChild(rb);
   p.appendChild(vb);
 }
 init();
