@@ -77,9 +77,12 @@ const kindStyle=k=>KIND[k]||KIND['depth-net'];
 
 // ---------- state ----------
 const S={ relief:40, base:6, gamma:1, contrast:1, floor:0, smooth:1, invert:false, collapse:true,
-  res:300, hybrid:false, baseEng:'da2', detailEng:'nanobanana', alpha:0.5, sigma:7,
-  clamp:0.12, dgamma:0.85, bgsupp:0.7, mlo:0.45, mhi:0.72, imgbump:0.45, edgesnap:0.3,
-  segground:0.7, groundLevel:0.1 };
+  // defaults reproduce the clean baked "DA2 ⊕ Nano" (one detail layer, additive); every
+  // extra lever (photo-bump, edge-snap, spike-clamp, bg-suppress, seg-ground) is OFF by
+  // default — they're opt-in tuning, not stacked-on noise.
+  res:300, hybrid:false, baseEng:'da2', detailEng:'nanobanana', alpha:0.6, sigma:6,
+  clamp:0.0, dgamma:1.0, bgsupp:0.0, mlo:0.45, mhi:0.72, imgbump:0.0, edgesnap:0.0,
+  segground:0.0, groundLevel:0.12 };
 
 // ---------- three ----------
 const canvas=document.getElementById('c');
